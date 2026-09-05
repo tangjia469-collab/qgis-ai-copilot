@@ -1,0 +1,20 @@
+[general]
+name=QGIS AI Copilot
+qgisMinimumVersion=3.44
+qgisMaximumVersion=3.99
+description=Router-neutral AI chat with controlled QGIS context
+about=A native QGIS dock for OpenAI-compatible model routers. It provides dynamic model selection, capability-driven Thinking controls, project-bound local chat history, privacy-aware QGIS context, and read-only local checks.
+version=0.3.0-alpha
+author=QGIS AI Copilot contributors
+email=
+homepage=https://github.com/tangjia469-collab/qgis-ai-copilot
+repository=https://github.com/tangjia469-collab/qgis-ai-copilot
+tracker=https://github.com/tangjia469-collab/qgis-ai-copilot/issues
+license=GPL-3.0-or-later
+icon=icon.svg
+category=Plugins
+tags=ai,chat,llm,openai,gis,copilot
+experimental=True
+deprecated=False
+hasProcessingProvider=no
+server=False

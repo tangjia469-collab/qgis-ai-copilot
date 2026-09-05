@@ -1,0 +1,1 @@
+"""QGIS AI Copilot tests."""
