@@ -100,7 +100,12 @@ class RouterSettingsDialog(QDialog):
         self.timeout_spin = QSpinBox(connection)
         self.timeout_spin.setRange(10, 600)
         self.timeout_spin.setSuffix(" s")
-        form.addRow("Timeout", self.timeout_spin)
+        form.addRow("Catalog timeout", self.timeout_spin)
+        self.chat_idle_spin = QSpinBox(connection)
+        self.chat_idle_spin.setRange(30, 3600)
+        self.chat_idle_spin.setSuffix(" s")
+        self.chat_idle_spin.setToolTip("Wait this long without router activity. Active streams reset this timer. Stop is always available; maximum request duration is one hour.")
+        form.addRow("Chat idle timeout", self.chat_idle_spin)
         layout.addWidget(connection)
 
         history = QGroupBox("Local chat history", body)
@@ -172,6 +177,7 @@ class RouterSettingsDialog(QDialog):
         self.context_trust_check.setChecked(self.settings.is_context_trusted(profile))
         self.streaming_check.setChecked(profile.streaming)
         self.timeout_spin.setValue(profile.timeout_seconds)
+        self.chat_idle_spin.setValue(profile.chat_idle_timeout_seconds)
         self.retention_spin.setValue(self.settings.history_retention_days())
         self._set_records(self.records)
 
@@ -188,6 +194,7 @@ class RouterSettingsDialog(QDialog):
             authcfg=self.auth_select.configId(),
             streaming=self.streaming_check.isChecked(),
             timeout_seconds=self.timeout_spin.value(),
+            chat_idle_timeout_seconds=self.chat_idle_spin.value(),
         )
 
     def _save(self) -> None:

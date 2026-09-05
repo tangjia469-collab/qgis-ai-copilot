@@ -212,6 +212,7 @@ class SafeTextBrowser(QTextBrowser):
 
 class MessageCard(QFrame):
     retryRequested = pyqtSignal(object, bool)
+    stopRequested = pyqtSignal()
 
     def __init__(self, message: dict[str, Any], parent: QWidget | None = None, available_attachment_ids: set[str] | None = None) -> None:
         super().__init__(parent)
@@ -238,6 +239,7 @@ class MessageCard(QFrame):
 
         self.body = SafeTextBrowser(self)
         self.body.set_content(str(message.get("content") or ""), role == "assistant")
+        self.body.setVisible(bool(message.get("content")))
         layout.addWidget(self.body)
         attachments = message.get("attachments")
         if isinstance(attachments, list) and attachments:
@@ -257,8 +259,15 @@ class MessageCard(QFrame):
         self.status_row = QHBoxLayout()
         self.status_label = QLabel(self._status_text(), self)
         self.status_label.setWordWrap(True)
+        self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_label.setProperty("kind", "meta")
         self.status_row.addWidget(self.status_label, 1)
+        self.stop_button = QToolButton(self)
+        self.stop_button.setText("Stop")
+        self.stop_button.setAccessibleName("Stop this response")
+        self.stop_button.clicked.connect(self.stopRequested)
+        self.stop_button.hide()
+        self.status_row.addWidget(self.stop_button)
         layout.addLayout(self.status_row)
         self._add_retry_controls()
 
@@ -276,7 +285,7 @@ class MessageCard(QFrame):
         if status == "streaming":
             return "Generating..."
         if status == "stopped":
-            return "Stopped - partial response preserved"
+            return "Stopped - partial response preserved" if self.message.get("content") else "Stopped before an answer arrived"
         if status == "error":
             error = self.message.get("error") or {}
             return str(error.get("message") or "Request failed")
@@ -300,10 +309,29 @@ class MessageCard(QFrame):
             self.status_row.addWidget(retry_auto)
 
     def append_delta(self, text: str) -> None:
+        self.body.show()
         self.message["content"] = str(self.message.get("content") or "") + text
         self.body.set_content(self.message["content"], markdown=False)
 
+    def update_progress(self, phase: str, elapsed_seconds: int, idle_seconds: int) -> None:
+        if self.message.get("status") != "streaming":
+            return
+        labels = {
+            "sending": "Sending request",
+            "waiting": "Waiting for answer",
+            "receiving": "Receiving answer",
+            "stopping": "Stopping",
+        }
+        label = labels.get(phase, "Waiting for answer")
+        elapsed = f"{elapsed_seconds // 60:02d}:{elapsed_seconds % 60:02d}"
+        activity = f" · Last activity {idle_seconds}s ago" if idle_seconds >= 5 else ""
+        self.status_label.setText(f"{label} · {elapsed}{activity}")
+        self.status_label.setToolTip("Elapsed time and observed router activity—not the model's private reasoning. You can Stop at any time.")
+        self.stop_button.setVisible(True)
+        self.stop_button.setEnabled(phase != "stopping")
+
     def finalize(self, content: str, status: str, error: dict[str, Any] | None = None) -> None:
+        self.stop_button.hide()
         self.message["content"] = content
         self.message["status"] = status
         if error:
@@ -311,7 +339,8 @@ class MessageCard(QFrame):
             self.setProperty("role", "error")
             self.style().unpolish(self)
             self.style().polish(self)
-        self.body.set_content(content or (error or {}).get("message", ""), markdown=status != "streaming")
+        self.body.set_content(content, markdown=status != "streaming")
+        self.body.setVisible(bool(content))
         self.status_label.setText(self._status_text())
         self._add_retry_controls()
 

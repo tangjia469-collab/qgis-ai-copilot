@@ -4,6 +4,7 @@ from tests.test_attachments import ONE_PIXEL_PNG_URL
 
 from qgis_ai_copilot.protocol import (
     ProtocolError,
+    RouterProfile,
     SseDecoder,
     bounded_chat_history,
     build_chat_payload,
@@ -17,6 +18,12 @@ from qgis_ai_copilot.protocol import (
 
 
 class ProtocolTests(unittest.TestCase):
+    def test_old_profiles_gain_separate_long_chat_idle_timeout(self):
+        profile = RouterProfile.from_dict({"timeout_seconds": 90})
+        self.assertEqual(getattr(profile, "chat_idle_timeout_seconds", None), 600)
+        self.assertEqual(profile.timeout_seconds, 90)
+        self.assertEqual(profile.to_dict()["chat_idle_timeout_seconds"], 600)
+
     def test_endpoint_preserves_optional_v1_prefix(self):
         self.assertEqual(
             endpoint_url("https://router.example", "/v1/models"),

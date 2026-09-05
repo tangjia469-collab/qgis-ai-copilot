@@ -7,7 +7,7 @@ The Python package is imported by QGIS through `classFactory`. The protocol and 
 - `python3 -m unittest discover -s tests`: pure protocol/storage/attachment helpers.
 - `python3 scripts/check_public_release.py`: repository privacy checks.
 - `python3 scripts/build_plugin.py`: deterministic, source-only plugin ZIP.
-- `python3 scripts/run_qgis_tests.py`: five native suites using the current interpreter's QGIS installation, including network, lifecycle, attachments, image compression, and composer layout.
+- `python3 scripts/run_qgis_tests.py`: six native suites using the current interpreter's QGIS installation, including network, lifecycle, attachments, image compression, composer layout, and request progress/cancellation.
 
 The native suites generate polygon/point layers, image pixels, and PDF pages. They never require a real project, router endpoint, or credential. Set `QT_QPA_PLATFORM=offscreen` for headless execution. `QGIS_PREFIX_PATH` is respected; otherwise normal installation defaults are used, with a standard macOS bundle fallback.
 
@@ -34,3 +34,4 @@ Build the plugin ZIP and use QGIS's **Install from ZIP**. For development, copy 
 
 CI runs pure tests/lint/packaging on standard Python and native suites in a digest-pinned official QGIS 3.44.6 Linux container. The workflow uses read-only repository permissions and no router secrets. Screenshots produced by tests go to ignored `artifacts/`; only manually reviewed synthetic examples belong in documentation.
 
+Floating-window decorations differ by platform. Layout tests retain child-control bounds and exact requested sizing where supported, allowing only the toolkit's bounded minimum-size expansion for a narrow floating dock.

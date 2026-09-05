@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -38,6 +39,8 @@ CONTENT_TYPE_HEADER = (
     if hasattr(QNetworkRequest, "ContentTypeHeader")
     else QNetworkRequest.KnownHeaders.ContentTypeHeader
 )
+MAX_CHAT_DURATION_MS = 60 * 60 * 1000
+MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 
 
 class RouterClient(QObject):
@@ -50,6 +53,7 @@ class RouterClient(QObject):
     chatCompleted = pyqtSignal(str, bool, object)
     chatStopped = pyqtSignal(str)
     chatFailed = pyqtSignal(str, str, int, str)
+    chatProgress = pyqtSignal(str, int, int)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -63,6 +67,17 @@ class RouterClient(QObject):
         self._chat_timer = QTimer(self)
         self._chat_timer.setSingleShot(True)
         self._chat_timer.timeout.connect(self._chat_timeout)
+        self._chat_deadline = QTimer(self)
+        self._chat_deadline.setSingleShot(True)
+        self._chat_deadline.timeout.connect(self._chat_deadline_reached)
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setInterval(1000)
+        self._progress_timer.timeout.connect(self._emit_progress)
+        self._chat_idle_ms = 600_000
+        self._started_at = 0.0
+        self._last_activity_at = 0.0
+        self._phase = "sending"
+        self._response_bytes = 0
         self._chat_streaming = True
         self._chat_raw = bytearray()
         self._chat_decoder = SseDecoder()
@@ -89,7 +104,7 @@ class RouterClient(QObject):
         request.setRawHeader(QByteArray(b"Accept"), QByteArray(accept))
         request.setRawHeader(QByteArray(b"User-Agent"), QByteArray(USER_AGENT.encode("ascii")))
         if hasattr(request, "setTransferTimeout"):
-            request.setTransferTimeout(profile.timeout_seconds * 1000)
+            request.setTransferTimeout(int(profile.timeout_seconds * 1000))
         if profile.authcfg:
             result = QgsApplication.authManager().updateNetworkRequest(request, profile.authcfg)
             if isinstance(result, tuple):
@@ -180,6 +195,9 @@ class RouterClient(QObject):
             return
 
         request.setHeader(CONTENT_TYPE_HEADER, "application/json")
+        self._chat_idle_ms = max(1, int(profile.chat_idle_timeout_seconds * 1000))
+        if hasattr(request, "setTransferTimeout"):
+            request.setTransferTimeout(self._chat_idle_ms + 1000)
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self._chat_streaming = bool(payload.get("stream"))
         self._chat_raw = bytearray()
@@ -188,14 +206,63 @@ class RouterClient(QObject):
         self._chat_done = False
         self._chat_cancel_requested = False
         self._chat_forced_error = None
+        self._response_bytes = 0
+        self._started_at = self._last_activity_at = time.monotonic()
+        self._phase = "sending"
 
         reply = self._manager.post(request, QByteArray(body))
         self._chat_reply = reply
+        # QGIS 3.44 also installs a reply-local timeoutTimer. Its default is a
+        # global GIS-network timeout, not our long-chat budget. Adjust this one
+        # reply only; do not mutate QgsNetworkAccessManager.setTimeout/settings.
+        qgis_timer = reply.findChild(QTimer, "timeoutTimer")
+        if qgis_timer is not None:
+            qgis_timer.setInterval(self._chat_idle_ms + 1000)
         reply.readyRead.connect(lambda active=reply: self._chat_ready_read(active))
+        reply.metaDataChanged.connect(lambda active=reply: self._chat_headers(active))
+        reply.uploadProgress.connect(lambda sent, total, active=reply: self._chat_upload_progress(active, sent, total))
         reply.finished.connect(lambda active=reply: self._chat_finished(active))
         reply.sslErrors.connect(lambda errors, active=reply: self._chat_ssl_errors(active, errors))
-        self._chat_timer.start(profile.timeout_seconds * 1000)
+        self._chat_timer.start(self._chat_idle_ms)
+        self._chat_deadline.start(MAX_CHAT_DURATION_MS)
+        self._progress_timer.start()
         self.chatStarted.emit()
+        self._emit_progress()
+
+    def _emit_progress(self) -> None:
+        if self._chat_reply is not None:
+            now = time.monotonic()
+            self.chatProgress.emit(self._phase, int(now - self._started_at), int(now - self._last_activity_at))
+
+    def _activity(self, reply: QNetworkReply) -> None:
+        if reply is not self._chat_reply:
+            return
+        self._last_activity_at = time.monotonic()
+        self._chat_timer.start(self._chat_idle_ms)
+        qgis_timer = reply.findChild(QTimer, "timeoutTimer")
+        if qgis_timer is not None:
+            qgis_timer.start(self._chat_idle_ms + 1000)
+
+    def _chat_headers(self, reply: QNetworkReply) -> None:
+        if reply is not self._chat_reply:
+            return
+        self._activity(reply)
+        if self._phase == "sending":
+            self._phase = "waiting"
+        self._emit_progress()
+
+    def _chat_upload_progress(self, reply: QNetworkReply, sent: int, total: int) -> None:
+        if reply is not self._chat_reply or sent < 0:
+            return
+        self._activity(reply)
+        if total > 0 and sent >= total and self._phase == "sending":
+            self._phase = "waiting"
+        self._emit_progress()
+
+    def _stop_chat_timers(self) -> None:
+        self._chat_timer.stop()
+        self._chat_deadline.stop()
+        self._progress_timer.stop()
 
     def _chat_uses_sse(self, reply: QNetworkReply) -> bool:
         content_type = self._content_type(reply)
@@ -209,18 +276,32 @@ class RouterClient(QObject):
         chunk = bytes(reply.readAll())
         if not chunk:
             return
+        self._activity(reply)
+        self._response_bytes += len(chunk)
+        if self._response_bytes > MAX_RESPONSE_BYTES:
+            self._chat_forced_error = ("response_limit", "The response exceeded the 32 MiB safety limit.")
+            reply.abort()
+            return
         status = self._status(reply)
         if status >= 400 or not self._chat_uses_sse(reply):
             self._chat_raw.extend(chunk)
+            self._phase = "receiving"
+            self._emit_progress()
             return
         try:
             for data in self._chat_decoder.feed(chunk):
+                if reply is not self._chat_reply:
+                    return
                 kind, value = parse_sse_chat_data(data)
                 if kind == "done":
                     self._chat_done = True
                 elif kind == "delta":
+                    self._phase = "receiving"
                     self._chat_partial += value
                     self.chatDelta.emit(value)
+            if self._phase == "sending":
+                self._phase = "waiting"
+            self._emit_progress()
         except ProtocolError as exc:
             self._chat_forced_error = ("broken_stream", str(exc))
             reply.abort()
@@ -233,7 +314,12 @@ class RouterClient(QObject):
 
     def _chat_timeout(self) -> None:
         if self._chat_reply is not None:
-            self._chat_forced_error = ("timeout", "Chat request timed out.")
+            self._chat_forced_error = ("timeout", "No router activity within the chat idle timeout. Retry or increase Chat idle timeout in Settings; the provider may also impose its own limit.")
+            self._chat_reply.abort()
+
+    def _chat_deadline_reached(self) -> None:
+        if self._chat_reply is not None:
+            self._chat_forced_error = ("timeout", "The maximum request duration was reached. Partial output has been preserved.")
             self._chat_reply.abort()
 
     def _chat_finished(self, reply: QNetworkReply) -> None:
@@ -241,7 +327,7 @@ class RouterClient(QObject):
             reply.deleteLater()
             return
         self._chat_ready_read(reply)
-        self._chat_timer.stop()
+        self._stop_chat_timers()
         self._chat_reply = None
         status = self._status(reply)
         network_error = reply.error() != QNetworkReply.NoError
@@ -283,17 +369,19 @@ class RouterClient(QObject):
         reply.deleteLater()
 
     def abort_chat(self, silent: bool = False) -> None:
-        self._chat_timer.stop()
+        self._stop_chat_timers()
         if self._chat_reply is None:
             return
         reply = self._chat_reply
-        if silent:
-            self._chat_reply = None
-            reply.abort()
-            reply.deleteLater()
-            return
-        self._chat_cancel_requested = True
+        if not silent:
+            self._phase = "stopping"
+            self._emit_progress()
+        # Detach first so cancellation and any late callbacks cannot revive UI.
+        self._chat_reply = None
         reply.abort()
+        reply.deleteLater()
+        if not silent:
+            self.chatStopped.emit(self._chat_partial)
 
     def close(self) -> None:
         self.abort_catalog()

@@ -28,6 +28,7 @@ class RouterProfile:
     authcfg: str = ""
     streaming: bool = True
     timeout_seconds: int = 90
+    chat_idle_timeout_seconds: int = 600
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -39,12 +40,17 @@ class RouterProfile:
             timeout = int(value.get("timeout_seconds", 90))
         except (TypeError, ValueError):
             timeout = 90
+        try:
+            chat_idle = int(value.get("chat_idle_timeout_seconds", 600))
+        except (TypeError, ValueError):
+            chat_idle = 600
         return cls(
             name=str(value.get("name") or "Router").strip() or "Router",
             base_url=str(value.get("base_url") or "").strip(),
             authcfg=str(value.get("authcfg") or "").strip(),
             streaming=bool(value.get("streaming", True)),
             timeout_seconds=max(10, min(timeout, 600)),
+            chat_idle_timeout_seconds=max(30, min(chat_idle, 3600)),
         )
 
 

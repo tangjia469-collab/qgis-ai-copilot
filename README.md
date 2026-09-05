@@ -25,7 +25,7 @@ Screenshots in this repository use generated test data only.
 
 ## Install
 
-1. Download **[qgis_ai_copilot-0.3.0-alpha.zip](https://github.com/tangjia469-collab/qgis-ai-copilot/releases/download/v0.3.0-alpha/qgis_ai_copilot-0.3.0-alpha.zip)** from the [Releases page](https://github.com/tangjia469-collab/qgis-ai-copilot/releases). Use the plugin ZIP, not GitHub's automatically generated source archive.
+1. Download **[qgis_ai_copilot-0.3.1-alpha.zip](https://github.com/tangjia469-collab/qgis-ai-copilot/releases/download/v0.3.1-alpha/qgis_ai_copilot-0.3.1-alpha.zip)** from the [Releases page](https://github.com/tangjia469-collab/qgis-ai-copilot/releases). Use the plugin ZIP, not GitHub's automatically generated source archive.
 2. In QGIS, open **Plugins → Manage and Install Plugins → Install from ZIP**.
 3. Select the ZIP and enable **QGIS AI Copilot**.
 4. Open its settings, enter your router's Base URL, and configure authentication as described below.
@@ -41,6 +41,14 @@ For an existing installation, unload the plugin before upgrading. Save any tempo
 - `Thinking: Auto` omits `reasoning_effort`; explicit values come from router metadata or your local capability configuration. Models are never silently changed.
 
 API usage is billed by your router/provider. No credentials are included in this repository. ChatGPT subscription access alone is not an API key.
+
+### Long requests and Stop
+
+Each active answer shows real request status (**Sending request → Waiting for answer → Receiving answer**), elapsed time, and time since recent router activity. These are transport milestones, not a fabricated completion percentage or the model's private reasoning.
+
+The default **Chat idle timeout** is 600 seconds (Settings allows 30–3600 seconds). Receiving bytes or heartbeat events resets it, so an active stream is not cut off by the old 90-second total timer. A one-hour total cap and 32 MiB response cap still apply. Catalog timeout is separate. QGIS's reply-local timeout is aligned without changing the application's global network timeout.
+
+Click **Stop** on the active message or the composer Stop icon to disconnect immediately; partial answer text is retained and late events are ignored. Upstream routers may have shorter timeouts or may continue computation/billing after a client disconnect. Retry is explicit, never automatic.
 
 ### Images, PDFs, and screen sharing
 
@@ -96,4 +104,3 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md), [CHANGELOG.md](CHANGELOG.md), [the prod
 Copyright (C) 2026 QGIS AI Copilot contributors.
 
 Licensed under the **GNU General Public License, version 3 or (at your option) any later version**. See [LICENSE](LICENSE). Distributed without warranty. Qt example attribution and external dependency notes are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
-

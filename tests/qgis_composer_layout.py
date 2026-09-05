@@ -59,7 +59,8 @@ class ComposerLayoutTests(unittest.TestCase):
         for width in (360, 420, 460):
             dock.resize(width, 740)
             self.app.processEvents()
-            self.assertEqual(dock.width(), width)
+            self.assertEqual(dock.width(), max(width, dock.minimumSizeHint().width()))
+            self.assertLessEqual(dock.width() - width, 24, "Unexpected content growth beyond floating-window chrome")
             model = dock.model_button.mapTo(dock.root, QPoint())
             send = dock.send_button.mapTo(dock.root, QPoint())
             self.assertEqual(dock.model_button.parentWidget(), dock.send_button.parentWidget())

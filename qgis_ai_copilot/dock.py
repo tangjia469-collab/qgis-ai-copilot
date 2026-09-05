@@ -93,6 +93,7 @@ ERROR_TITLES = {
     "request": "Router rejected the request",
     "thinking_unsupported": "Thinking value unsupported",
     "broken_stream": "Streaming response interrupted",
+    "response_limit": "Response too large",
 }
 
 
@@ -382,6 +383,7 @@ class CopilotDock(QDockWidget):
         self.client.chatCompleted.connect(self._chat_completed)
         self.client.chatStopped.connect(self._chat_stopped)
         self.client.chatFailed.connect(self._chat_failed)
+        self.client.chatProgress.connect(self._chat_progress)
 
         self.monitor.staleChanged.connect(self._context_stale_changed)
         self.monitor.projectIdentityChanged.connect(self._project_identity_changed)
@@ -450,6 +452,7 @@ class CopilotDock(QDockWidget):
             index = self.conversation_layout.count()
         card = MessageCard(message, self.conversation_body, set(self._attachment_payloads))
         card.retryRequested.connect(self._retry_message)
+        card.stopRequested.connect(lambda: self.client.abort_chat() if self._active_card is card else None)
         self.conversation_layout.insertWidget(index, card)
         QTimer.singleShot(0, self._scroll_to_bottom)
         return card
@@ -1358,6 +1361,7 @@ class CopilotDock(QDockWidget):
         self._persist_conversation()
         self._active_message = assistant
         self._active_card = self._insert_message(assistant)
+        self._active_card.update_progress("sending", 0, 0)
         self._set_generating(True)
         self.client.send_chat(self.profile, payload)
 
@@ -1373,6 +1377,10 @@ class CopilotDock(QDockWidget):
         if self._active_card is not None:
             self._active_card.append_delta(text)
             self._scroll_to_bottom()
+
+    def _chat_progress(self, phase: str, elapsed: int, idle: int) -> None:
+        if self._active_card is not None:
+            self._active_card.update_progress(phase, elapsed, idle)
 
     def _chat_completed(self, content: str, non_streaming: bool, usage: dict[str, Any]) -> None:
         status = "non_streaming" if non_streaming else "complete"

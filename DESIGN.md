@@ -12,5 +12,6 @@ The context dropdown contains project identity, Current/Refresh, selected metada
 
 Draft file attachments have preview/removal controls and a height-bounded scroll strip. They do not appear as implicitly trusted metadata. During streaming, Send becomes Stop. Errors remain visible and retain partial answers; retry preserves the original model and request context.
 
-Validate 360, 420, and 460 pixel docks. Long model names are elided visually but remain available in tooltips/accessibility labels. No permanent Model, Thinking, or context/status rows sit above the conversation.
+An active answer has a compact status row: sending/waiting/receiving, elapsed `mm:ss`, time since router activity when relevant, and a text Stop button. Silence does not produce fake milestones or reveal internal reasoning. A terminal error is shown once, alongside any preserved partial answer.
 
+Validate 360, 420, and 460 pixel docks. Long model names are elided visually but remain available in tooltips/accessibility labels. No permanent Model, Thinking, or context/status rows sit above the conversation.

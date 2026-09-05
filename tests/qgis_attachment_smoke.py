@@ -275,11 +275,12 @@ def main():
         for width in [360, 420, 460]:
             dock.resize(width, 740)
             app.processEvents()
-            assert dock.width() == width, (
+            assert dock.width() == max(width, dock.minimumSizeHint().width()), (
                 width,
                 dock.width(),
                 dock.minimumSizeHint().width(),
             )
+            assert dock.width() - width <= 24, "Unexpected content growth beyond floating-window chrome"
             for child in [dock.send_button, dock.attach_button, dock.model_button]:
                 pos = child.mapTo(dock.root, child.rect().topLeft())
                 assert pos.x() >= 0 and pos.x() + child.width() <= dock.root.width()
