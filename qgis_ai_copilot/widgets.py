@@ -7,8 +7,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from qgis.PyQt.QtCore import QByteArray, QPoint, QRect, QSize, Qt, QTimer, QUrl, pyqtSignal
-from qgis.PyQt.QtGui import QDesktopServices, QTextDocument, QFontMetrics
+from qgis.PyQt.QtCore import QByteArray, QPoint, QRect, QRectF, QSize, Qt, QTimer, QUrl, pyqtSignal
+from qgis.PyQt.QtGui import QDesktopServices, QTextDocument, QFontMetrics, QIcon, QPainter, QPen, QPixmap, QPalette
 from qgis.PyQt.QtWidgets import (
     QApplication,
     QFrame,
@@ -211,6 +211,79 @@ class SafeTextBrowser(QTextBrowser):
         QTimer.singleShot(0, self._resize_to_document)
 
 
+class CompactQuestionBrowser(SafeTextBrowser):
+    overflowChanged = pyqtSignal(bool)
+
+    def __init__(self, parent=None):
+        self.expanded = False
+        self._resizing = False
+        self._overflow = False
+        super().__init__(parent)
+
+    def set_expanded(self, expanded: bool) -> None:
+        self.expanded = expanded
+        self._resize_to_document()
+
+    def _resize_to_document(self, *_args) -> None:
+        if self._resizing:
+            return
+        self._resizing = True
+        try:
+            self.document().setTextWidth(max(80, self.viewport().width()))
+            natural = max(24, int(self.document().size().height()) + 5)
+            limit = min(84, self.fontMetrics().lineSpacing() * 4 + 8)
+            overflow = natural > limit
+            self.setFixedHeight(natural if self.expanded else min(natural, limit))
+            if overflow != self._overflow:
+                self._overflow = overflow
+                self.overflowChanged.emit(overflow)
+        finally:
+            self._resizing = False
+
+
+class FooterLabel(QLabel):
+    """One-line metadata with its full value in tooltip and accessibility text."""
+
+    def __init__(self, text: str, parent=None):
+        super().__init__(parent)
+        self._full_text = ""
+        self.setTextFormat(Qt.PlainText)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        self.setText(text)
+
+    def setText(self, text: str) -> None:  # noqa: N802
+        self._full_text = text
+        self.setToolTip(text)
+        self.setAccessibleName(text)
+        super().setText(self.fontMetrics().elidedText(text, Qt.ElideMiddle, max(30, self.width())))
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.setText(self._full_text)
+
+
+def message_action_icon(widget: QWidget, action: str) -> QIcon:
+    """Small palette-aware outline copy (two sheets) or pencil icon."""
+    pixmap = QPixmap(32, 32)
+    pixmap.setDevicePixelRatio(2)
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setPen(QPen(widget.palette().color(QPalette.WindowText), 1.2))
+    if action == "copy":
+        painter.drawRoundedRect(QRectF(2, 2, 8, 10), 1, 1)
+        painter.setBrush(widget.palette().color(QPalette.Window))
+        painter.drawRoundedRect(QRectF(6, 5, 8, 9), 1, 1)
+    else:
+        painter.drawLine(4, 10, 11, 3)
+        painter.drawLine(6, 12, 13, 5)
+        painter.drawLine(11, 3, 13, 5)
+        painter.drawLine(4, 10, 3, 13)
+        painter.drawLine(3, 13, 6, 12)
+    painter.end()
+    return QIcon(pixmap)
+
+
 class ActivityBrowser(QPlainTextEdit):
     """Bounded plain-text activity log that cannot recursively relayout the dock."""
 
@@ -233,13 +306,20 @@ class ActivityBrowser(QPlainTextEdit):
 class MessageCard(QFrame):
     retryRequested = pyqtSignal(object, bool)
     stopRequested = pyqtSignal()
+    editRequested = pyqtSignal(object)
 
-    def __init__(self, message: dict[str, Any], parent: QWidget | None = None, available_attachment_ids: set[str] | None = None) -> None:
+    def __init__(
+        self,
+        message: dict[str, Any],
+        parent: QWidget | None = None,
+        available_attachment_ids: set[str] | None = None,
+        editable: bool = False,
+    ) -> None:
         super().__init__(parent)
         self.message = message
         role = str(message.get("role") or "assistant")
         self.setProperty("role", "user" if role == "user" else "assistant")
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Maximum)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(
             8 if role == "user" else 9,
@@ -248,19 +328,6 @@ class MessageCard(QFrame):
             4 if role == "user" else 7,
         )
         layout.setSpacing(3)
-
-        header = QHBoxLayout()
-        self.meta = QLabel(self._meta_text(), self)
-        self.meta.setWordWrap(True)
-        self.meta.setProperty("kind", "user-meta" if role == "user" else "meta")
-        header.addWidget(self.meta, 1)
-        if role == "assistant" or message.get("content"):
-            copy_button = QToolButton(self)
-            copy_button.setText("Copy")
-            copy_button.setToolTip("Copy response")
-            copy_button.clicked.connect(self._copy)
-            header.addWidget(copy_button)
-        layout.addLayout(header)
 
         self.activity_panel = QFrame(self)
         self.activity_panel.setProperty("role", "activity")
@@ -280,11 +347,9 @@ class MessageCard(QFrame):
         layout.addWidget(self.activity_panel)
         self._render_activity()
 
-        self.body = SafeTextBrowser(self)
+        self.body = CompactQuestionBrowser(self) if role == "user" else SafeTextBrowser(self)
         self.body.set_content(str(message.get("content") or ""), role == "assistant")
         self.body.setVisible(bool(message.get("content")))
-        if role == "user":
-            self.body.setMaximumHeight(68)
         layout.addWidget(self.body)
         attachments = message.get("attachments")
         if isinstance(attachments, list) and attachments:
@@ -301,8 +366,11 @@ class MessageCard(QFrame):
                 attached.setWordWrap(True)
                 layout.addWidget(attached)
 
-        self.status_row = QHBoxLayout()
-        self.status_label = QLabel(self._status_text(), self)
+        self.status_widget = QWidget(self)
+        self.status_row = QHBoxLayout(self.status_widget)
+        self.status_row.setContentsMargins(0, 0, 0, 0)
+        self.status_label = QLabel(self._status_text(), self.status_widget)
+        self.status_label.setTextFormat(Qt.PlainText)
         self.status_label.setWordWrap(True)
         self.status_label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.status_label.setProperty("kind", "meta")
@@ -313,17 +381,62 @@ class MessageCard(QFrame):
         self.stop_button.clicked.connect(self.stopRequested)
         self.stop_button.hide()
         self.status_row.addWidget(self.stop_button)
-        layout.addLayout(self.status_row)
+        layout.addWidget(self.status_widget)
+        self.status_widget.setVisible(role == "assistant" and message.get("status") in {"streaming", "stopped", "error"})
+        self.footer = QWidget(self)
+        self.footer.setObjectName("MessageFooter")
+        footer_row = QHBoxLayout(self.footer)
+        footer_row.setContentsMargins(0, 0, 0, 0)
+        footer_row.setSpacing(3)
+        self.footer_meta = FooterLabel(self._meta_text(), self.footer)
+        self.footer_meta.setProperty("kind", "user-meta" if role == "user" else "meta")
+        footer_row.addWidget(self.footer_meta, 1)
+        self.question_toggle = QToolButton(self.footer)
+        self.question_toggle.setText("Show more")
+        self.question_toggle.setCheckable(True)
+        self.question_toggle.setProperty("kind", "question-toggle")
+        self.question_toggle.setAccessibleName("Show full question")
+        self.question_toggle.hide()
+        if role == "user":
+            self.body.overflowChanged.connect(self.question_toggle.setVisible)
+            self.question_toggle.toggled.connect(self.body.set_expanded)
+            self.question_toggle.toggled.connect(lambda expanded: self.question_toggle.setText("Show less" if expanded else "Show more"))
+        footer_row.addWidget(self.question_toggle)
+        self.copy_button = QToolButton(self.footer)
+        self.copy_button.setIcon(message_action_icon(self, "copy"))
+        self.copy_button.setProperty("kind", "message-action")
+        self.copy_button.setFixedSize(22, 22)
+        self.copy_button.setIconSize(QSize(14, 14))
+        self.copy_button.setToolTip("Copy response")
+        self.copy_button.setAccessibleName("Copy response")
+        self.copy_button.clicked.connect(self._copy)
+        self.copy_button.setVisible(role == "assistant")
+        footer_row.addWidget(self.copy_button)
+        self.edit_button = QToolButton(self.footer)
+        self.edit_button.setIcon(message_action_icon(self, "edit"))
+        self.edit_button.setProperty("kind", "message-action")
+        self.edit_button.setFixedSize(22, 22)
+        self.edit_button.setIconSize(QSize(14, 14))
+        self.edit_button.setToolTip("Edit this question")
+        self.edit_button.setAccessibleName("Edit latest question")
+        self.edit_button.clicked.connect(lambda: self.editRequested.emit(self.message))
+        self.edit_button.setVisible(role == "user" and editable)
+        footer_row.addWidget(self.edit_button)
+        layout.addWidget(self.footer)
         self._add_retry_controls()
 
     def _meta_text(self) -> str:
         if self.message.get("role") == "user":
-            return "You"
+            timestamp = str(self.message.get("created_at") or "").replace("T", " ")[:16]
+            return f"You  |  {timestamp}"
         detail = self.message.get("request") or {}
         model = detail.get("model") or "Unknown model"
         thinking = detail.get("thinking") or "Auto"
         timestamp = str(self.message.get("created_at") or "").replace("T", " ")[:16]
-        return f"Assistant  |  {model}  |  Thinking: {thinking}  |  {timestamp}"
+        return f"{model}  ·  Thinking: {thinking}  ·  {timestamp}"
+
+    def set_editable(self, editable: bool) -> None:
+        self.edit_button.setVisible(self.message.get("role") == "user" and editable)
 
     def add_activity(self, event: dict[str, Any]) -> None:
         safe = sanitized_activity([event])
@@ -411,6 +524,7 @@ class MessageCard(QFrame):
 
     def finalize(self, content: str, status: str, error: dict[str, Any] | None = None) -> None:
         self.stop_button.hide()
+        self.status_widget.setVisible(status in {"error", "stopped"})
         self.message["content"] = content
         self.message["status"] = status
         if error:
@@ -421,14 +535,20 @@ class MessageCard(QFrame):
         self.body.set_content(content, markdown=status != "streaming")
         self.body.setVisible(bool(content))
         self.status_label.setText(self._status_text())
+        self.footer_meta.setText(self._meta_text())
         self._add_retry_controls()
         if status in {"complete", "non_streaming"}:
             self.activity_toggle.setChecked(False)
 
     def _copy(self) -> None:
         QApplication.clipboard().setText(str(self.message.get("content") or ""))
-        self.status_label.setText("Copied")
-        QTimer.singleShot(1200, lambda: self.status_label.setText(self._status_text()))
+        self.copy_button.setToolTip("Copied")
+        self.footer_meta.setText("Copied")
+        QTimer.singleShot(1200, self._restore_copy_feedback)
+
+    def _restore_copy_feedback(self) -> None:
+        self.footer_meta.setText(self._meta_text())
+        self.copy_button.setToolTip("Copy response")
 
 
 class ToolResultCard(QFrame):

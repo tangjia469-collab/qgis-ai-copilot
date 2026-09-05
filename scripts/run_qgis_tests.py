@@ -12,6 +12,7 @@ SUITES = (
     "qgis_image_compression", "qgis_composer_layout",
     "qgis_request_progress",
     "qgis_activity",
+    "qgis_message_edit",
 )
 
 if __name__ == "__main__":

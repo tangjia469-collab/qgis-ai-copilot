@@ -157,6 +157,9 @@ class CopilotDock(QDockWidget):
         self._tool_tasks: dict[str, dict[str, Any]] = {}
         self._confirmed_context_signature: tuple[str, ...] | None = None
         self._context_status = "Context snapshot is current"
+        self._editing_message_id: str | None = None
+        self._edit_draft_backup: dict[str, Any] | None = None
+        self._edit_missing_attachments: dict[str, dict[str, Any]] = {}
         self._closing = False
         self._toast_timer = QTimer(self)
         self._toast_timer.setSingleShot(True)
@@ -247,6 +250,24 @@ class CopilotDock(QDockWidget):
         self.attachment_scroll.setFixedHeight(96)
         self.attachment_scroll.hide()
         composer_layout.addWidget(self.attachment_scroll)
+        edit_row = QHBoxLayout()
+        edit_row.setContentsMargins(4, 0, 3, 0)
+        self.edit_status = QLabel("", composer)
+        self.edit_status.setProperty("kind", "meta")
+        self.edit_status.setWordWrap(True)
+        self.edit_status.setTextFormat(Qt.PlainText)
+        self.edit_status.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        edit_row.addWidget(self.edit_status, 1)
+        self.cancel_edit_button = QToolButton(composer)
+        self.cancel_edit_button.setIcon(_icon(self, "/mActionCancel.svg", QStyle.SP_DialogCancelButton))
+        self.cancel_edit_button.setFixedSize(26, 26)
+        self.cancel_edit_button.setToolTip("Cancel editing")
+        self.cancel_edit_button.setAccessibleName("Cancel editing latest question")
+        self.cancel_edit_button.clicked.connect(self._cancel_edit_question)
+        edit_row.addWidget(self.cancel_edit_button)
+        self.edit_status.hide()
+        self.cancel_edit_button.hide()
+        composer_layout.addLayout(edit_row)
         composer_actions = QHBoxLayout()
         composer_actions.setSpacing(4)
         composer_actions.setContentsMargins(4, 0, 3, 0)
@@ -405,7 +426,7 @@ class CopilotDock(QDockWidget):
         self.conversation = recent[0] if recent else self._blank_conversation()
         self._render_conversation()
 
-    def _render_conversation(self) -> None:
+    def _render_conversation(self, skip_message_id: str | None = None) -> None:
         while self.conversation_layout.count():
             item = self.conversation_layout.takeAt(0)
             widget = item.widget()
@@ -432,12 +453,20 @@ class CopilotDock(QDockWidget):
         else:
             self.local_results = []
             for message in messages:
+                if skip_message_id and message.get("id") == skip_message_id:
+                    continue
                 if message.get("role") == "tool" and isinstance(message.get("tool_result"), dict):
                     self.local_results.append(message["tool_result"])
                     self.conversation_layout.addWidget(ToolResultCard(message["tool_result"], self.conversation_body))
                 elif message.get("role") in {"user", "assistant"}:
-                    card = MessageCard(message, self.conversation_body, set(self._attachment_payloads))
+                    card = MessageCard(
+                        message,
+                        self.conversation_body,
+                        set(self._attachment_payloads),
+                        editable=message.get("id") == self._last_user_message_id(),
+                    )
                     card.retryRequested.connect(self._retry_message)
+                    card.editRequested.connect(self._begin_edit_question)
                     self.conversation_layout.addWidget(card)
         self.conversation_layout.addStretch(1)
         self._refresh_context_chips()
@@ -452,12 +481,104 @@ class CopilotDock(QDockWidget):
             index = self.conversation_layout.count() - 1
         else:
             index = self.conversation_layout.count()
-        card = MessageCard(message, self.conversation_body, set(self._attachment_payloads))
+        card = MessageCard(
+            message,
+            self.conversation_body,
+            set(self._attachment_payloads),
+            editable=message.get("role") == "user",
+        )
         card.retryRequested.connect(self._retry_message)
         card.stopRequested.connect(lambda: self.client.abort_chat() if self._active_card is card else None)
+        card.editRequested.connect(self._begin_edit_question)
         self.conversation_layout.insertWidget(index, card)
         QTimer.singleShot(0, self._scroll_to_bottom)
         return card
+
+    def _last_user_message_id(self) -> str | None:
+        for message in reversed(self.conversation.get("messages", [])):
+            if message.get("role") == "user":
+                return str(message.get("id") or "") or None
+        return None
+
+    def _refresh_message_editors(self) -> None:
+        target = self._last_user_message_id()
+        for card in self.conversation_body.findChildren(MessageCard):
+            card.set_editable(bool(target) and card.message.get("id") == target)
+            card.edit_button.setEnabled(self._active_message is None)
+
+    def _begin_edit_question(self, message: dict[str, Any]) -> None:
+        if self._active_message is not None or self._tool_tasks or self._attachment_task is not None or self._capture_timer.isActive():
+            self._toast("Wait for the current work or stop the response before editing")
+            return
+        target = message.get("id")
+        if not target or target != self._last_user_message_id():
+            self._toast("Only the latest question can be edited")
+            return
+        if self._editing_message_id == target:
+            self.message_input.setFocus()
+            return
+        message = next(item for item in self.conversation["messages"] if item.get("id") == target)
+        if message.get("router_id") and message["router_id"] != self._router_identity():
+            self._toast("The router changed; send a new question with this connection")
+            return
+        self._edit_draft_backup = {"text": self.message_input.toPlainText(), "attachments": dict(self.attachments)}
+        self._editing_message_id = str(message.get("id"))
+        self.message_input.setPlainText(str(message.get("content") or ""))
+        self.attachments.clear()
+        self._edit_missing_attachments.clear()
+        for manifest in message.get("attachments") or []:
+            if not isinstance(manifest, dict):
+                continue
+            attachment_id = str(manifest.get("id") or "")
+            attachment = self._attachment_payloads.get(attachment_id)
+            if attachment is None:
+                self._edit_missing_attachments[attachment_id] = dict(manifest)
+            else:
+                self.attachments[attachment_id] = attachment
+        self._refresh_attachment_chips()
+        self._set_editing_state(True)
+        self.message_input.setFocus()
+        self.message_input.selectAll()
+
+    def _set_editing_state(self, editing: bool) -> None:
+        self.edit_status.setVisible(editing)
+        self.cancel_edit_button.setVisible(editing)
+        if editing:
+            note = "Editing latest question · Send to replace its answer"
+            if self._edit_missing_attachments:
+                note += "\nRe-attach or remove the unavailable files below before sending."
+            self.edit_status.setText(note)
+        else:
+            self.edit_status.clear()
+        if self._active_message is None:
+            label = "Send revised question" if editing else "Send message"
+            self.send_button.setToolTip(label)
+            self.send_button.setAccessibleName(label)
+
+    def _cancel_edit_question(self) -> None:
+        if self._editing_message_id is None:
+            return
+        backup = self._edit_draft_backup or {}
+        self._cancel_draft_preparation()
+        self._editing_message_id = None
+        self._edit_draft_backup = None
+        self._edit_missing_attachments.clear()
+        self.message_input.setPlainText(backup.get("text", ""))
+        self.attachments = dict(backup.get("attachments") or {})
+        self._attachment_payloads.update(self.attachments)
+        self._refresh_attachment_chips()
+        self._set_editing_state(False)
+        self._refresh_message_editors()
+        self.message_input.setFocus()
+
+    def _cancel_draft_preparation(self) -> None:
+        self._capture_timer.stop()
+        if self._attachment_task is not None:
+            self._attachment_task[1].cancel()
+            self._attachment_task = None
+        self.attach_button.setEnabled(True)
+        self.attachment_status.clear()
+        self._refresh_send_enabled()
 
     def _insert_tool_result(self, result: dict[str, Any]) -> None:
         self._remove_empty_state()
@@ -1027,13 +1148,17 @@ class CopilotDock(QDockWidget):
             return
         evicted = False
         while sum(item.retained_size for item in self._attachment_payloads.values()) + attachment.retained_size > MAX_CACHED_ATTACHMENT_BYTES:
-            oldest = next((key for key in self._attachment_payloads if key not in self.attachments), None)
+            protected = set(self.attachments) | set((self._edit_draft_backup or {}).get("attachments") or {})
+            oldest = next((key for key in self._attachment_payloads if key not in protected), None)
             if oldest is None:
                 raise AttachmentError("Attachment memory limit reached.")
             self._attachment_payloads.pop(oldest)
             evicted = True
         self.attachments[attachment.attachment_id] = attachment
         self._attachment_payloads[attachment.attachment_id] = attachment
+        for key, manifest in tuple(self._edit_missing_attachments.items()):
+            if manifest.get("sha256") == attachment.sha256 and (manifest.get("pages") or []) == attachment.pages:
+                self._edit_missing_attachments.pop(key)
         self._refresh_attachment_chips()
         if evicted:
             self._render_conversation()
@@ -1042,8 +1167,15 @@ class CopilotDock(QDockWidget):
             self._toast(f"Attached: {attachment.name}")
 
     def _remove_attachment(self, attachment_id: str) -> None:
+        if attachment_id in self._edit_missing_attachments:
+            self._edit_missing_attachments.pop(attachment_id)
+            self._refresh_attachment_chips()
+            return
         attachment = self.attachments.pop(attachment_id, None)
-        self._attachment_payloads.pop(attachment_id, None)
+        used_in_history = any(item.get("id") == attachment_id for message in self.conversation.get("messages", []) for item in message.get("attachments") or [])
+        in_backup = attachment_id in ((self._edit_draft_backup or {}).get("attachments") or {})
+        if not used_in_history and not in_backup:
+            self._attachment_payloads.pop(attachment_id, None)
         self._refresh_attachment_chips()
         if attachment is not None:
             self._toast(f"Removed: {attachment.name}")
@@ -1064,14 +1196,21 @@ class CopilotDock(QDockWidget):
             chip.previewRequested.connect(self._preview_attachment)
             chip.removeRequested.connect(self._remove_attachment)
             self.attachments_layout.addWidget(chip)
-        self.attachment_scroll.setVisible(bool(self.attachments))
+        for key, manifest in self._edit_missing_attachments.items():
+            chip = AttachmentChip(key, f"{manifest.get('name', 'File')} (re-attach)", self.attachments_widget)
+            chip.previewRequested.connect(lambda _id: self._toast("Re-attach this file or remove it before sending the revision"))
+            chip.removeRequested.connect(self._remove_attachment)
+            self.attachments_layout.addWidget(chip)
+        self.attachment_scroll.setVisible(bool(self.attachments or self._edit_missing_attachments))
         self.attachments_widget.updateGeometry()
         self._size_attachment_strip()
         self._restore_privacy_text()
+        if self._editing_message_id:
+            self._set_editing_state(True)
 
     def _size_attachment_strip(self) -> None:
         columns = max(1, (self.width() - 24) // 188)
-        rows = (len(self.attachments) + columns - 1) // columns
+        rows = (len(self.attachments) + len(self._edit_missing_attachments) + columns - 1) // columns
         self.attachment_scroll.setFixedHeight(min(96, max(44, rows * 44)))
 
     def _preview_attachment(self, attachment_id: str) -> None:
@@ -1199,6 +1338,9 @@ class CopilotDock(QDockWidget):
         if self._attachment_task is not None or self._capture_timer.isActive():
             self._toast("Wait for attachment preparation or capture to finish")
             return
+        if self._edit_missing_attachments:
+            QMessageBox.warning(self, "Attachment needed", "Re-attach or explicitly remove the unavailable files before sending this revised question.")
+            return
         prompt = self.message_input.toPlainText().strip()
         if not prompt and not self.attachments:
             self.message_input.setFocus()
@@ -1228,8 +1370,22 @@ class CopilotDock(QDockWidget):
         }
         if attachment_manifests:
             user_message["attachments"] = attachment_manifests
+        conversation = self.conversation
         messages = self.conversation.setdefault("messages", [])
-        messages.append(user_message)
+        before_ids = [item.get("id") for item in messages]
+        editing = self._editing_message_id
+        if editing:
+            if editing != self._last_user_message_id():
+                self._toast("The latest question changed; cancel editing and select it again")
+                return
+            index = next(i for i, item in enumerate(messages) if item.get("id") == editing)
+            # Keep local check records; replace only the latest question and
+            # its following AI answers. A new ID invalidates old Retry cards.
+            proposed = messages[:index] + [item for item in messages[index + 1:] if item.get("role") not in {"assistant", "user"}]
+            user_message["edited"] = True
+        else:
+            proposed = list(messages)
+        proposed.append(user_message)
         request = {
             "profile_name": self.profile.name,
             "model": self.selected_model,
@@ -1245,8 +1401,8 @@ class CopilotDock(QDockWidget):
         if attachment_manifests:
             request["attachments"] = attachment_manifests
         try:
-            outgoing = self._canonical_messages(request)
-            build_chat_payload(self.selected_model, outgoing)
+            outgoing = self._canonical_messages(request, proposed)
+            payload = self._build_request_payload(request, proposed)
             retained = self._attachments_in_messages(outgoing)
             self._validate_visual_model(retained)
             accepted = self._confirm_context_send() and self._confirm_attachment_send(retained)
@@ -1254,17 +1410,37 @@ class CopilotDock(QDockWidget):
             accepted = False
             QMessageBox.warning(self, "Message not sent", str(exc))
         if not accepted:
-            messages.pop()
+            return
+        if self.conversation is not conversation or before_ids != [item.get("id") for item in self.conversation.get("messages", [])] or request["router_id"] != self._router_identity() or self._record_for(request["model"]) is None or editing != self._editing_message_id:
+            self._toast("Chat or connection changed during confirmation. Review and send again.")
             return
         request["destination"] = (self.profile.base_url, self.profile.authcfg)
-        self.message_input.clear()
-        if not any(message.get("role") == "user" for message in messages[:-1]):
+        old_title = self.conversation.get("title", "New chat")
+        self.conversation["messages"] = proposed
+        if not any(message.get("role") == "user" for message in proposed[:-1]):
             self.conversation["title"] = prompt[:80]
-        self._persist_conversation()
-        self._insert_message(user_message)
+        assistant = self._new_assistant_message(request)
+        proposed.append(assistant)
+        try:
+            self._persist_conversation()
+        except OSError:
+            self.conversation["messages"] = messages
+            self.conversation["title"] = old_title
+            QMessageBox.warning(self, "Message not sent", "Local history could not be saved. Your original question and answer are unchanged.")
+            return
+        self.message_input.clear()
+        self._editing_message_id = None
+        self._edit_draft_backup = None
+        self._edit_missing_attachments.clear()
+        self._set_editing_state(False)
+        if editing:
+            self._render_conversation(skip_message_id=assistant["id"])
+        else:
+            self._insert_message(user_message)
+        self._refresh_message_editors()
         self.attachments.clear()
         self._refresh_attachment_chips()
-        self._start_request(request)
+        self._start_request(request, payload, assistant)
 
     def _context_confirmation_signature(self) -> tuple[str, ...]:
         keys = sorted(self.attached_keys)
@@ -1306,11 +1482,14 @@ class CopilotDock(QDockWidget):
         self._confirmed_context_signature = signature
         return True
 
-    def _canonical_messages(self, request: dict[str, Any]) -> list[dict[str, Any]]:
+    def _canonical_messages(self, request: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
         context_json = json.dumps(request["context"], ensure_ascii=False, separators=(",", ":"))
         history: list[dict[str, Any]] = []
         target_id = request.get("user_message_id")
-        for message in self.conversation.get("messages", []):
+        source_messages = messages if messages is not None else self.conversation.get("messages", [])
+        if not any(item.get("role") == "user" and item.get("id") == target_id for item in source_messages):
+            raise ProtocolError("The original question was replaced or is unavailable. Send a new message.")
+        for message in source_messages:
             router_id = message.get("router_id") or (message.get("request") or {}).get("router_id")
             if (router_id and router_id != self._router_identity()) or (message.get("attachments") and not router_id):
                 if message.get("id") == target_id:
@@ -1334,7 +1513,30 @@ class CopilotDock(QDockWidget):
             *bounded_chat_history(history),
         ]
 
-    def _start_request(self, request: dict[str, Any]) -> None:
+    def _build_request_payload(self, request: dict[str, Any], messages: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        self._validate_request_router(request)
+        model_id = str(request.get("model") or "")
+        if self._record_for(model_id) is None:
+            raise ProtocolError("The model is unavailable; choose a model explicitly")
+        adapter = str(request.get("adapter") or self.profile.adapter)
+        canonical = self._canonical_messages(request, messages)
+        summary = bool(request.get("reasoning_summaries", self.profile.reasoning_summaries))
+        if adapter == "responses":
+            canonical[0]["content"] += "\nWhen useful, give brief user-facing commentary updates before the final answer. Describe intended checks and conclusions, not raw internal reasoning. Never claim that a local GIS operation ran unless an attached result confirms it."
+            payload = build_responses_payload(model_id, canonical, str(request.get("thinking") or "Auto"), bool(request.get("stream", True)), summary)
+        elif adapter == "chat_completions":
+            payload = build_chat_payload(model_id, canonical, str(request.get("thinking") or "Auto"), bool(request.get("stream", True)))
+        else:
+            raise ProtocolError("Unsupported API adapter")
+        request["adapter"] = adapter
+        request["reasoning_summaries"] = summary
+        return payload
+
+    @staticmethod
+    def _new_assistant_message(request: dict[str, Any]) -> dict[str, Any]:
+        return {"id": uuid.uuid4().hex, "role": "assistant", "content": "", "status": "streaming", "created_at": utc_now(), "request": deepcopy(request)}
+
+    def _start_request(self, request: dict[str, Any], payload: dict[str, Any] | None = None, assistant: dict[str, Any] | None = None) -> None:
         model_id = str(request.get("model") or "")
         if self._record_for(model_id) is None:
             self._toast("The original model is unavailable; choose a model explicitly")
@@ -1344,28 +1546,21 @@ class CopilotDock(QDockWidget):
             destination = request.get("destination")
             if destination and destination != (self.profile.base_url, self.profile.authcfg):
                 raise ProtocolError("The router connection changed. Attach the files in a new message before sending.")
-            adapter = str(request.get("adapter") or self.profile.adapter)
-            messages = self._canonical_messages(request)
-            if adapter == "responses":
-                messages[0]["content"] += "\nWhen useful, give brief user-facing commentary updates before the final answer. Describe intended checks and conclusions, not raw internal reasoning. Never claim that a local GIS operation ran unless an attached result confirms it."
-                payload = build_responses_payload(model_id, messages, str(request.get("thinking") or "Auto"), bool(request.get("stream", True)), bool(request.get("reasoning_summaries", self.profile.reasoning_summaries)))
-            else:
-                payload = build_chat_payload(model_id, messages, str(request.get("thinking") or "Auto"), bool(request.get("stream", True)))
-            request["adapter"] = adapter
-            request["reasoning_summaries"] = bool(request.get("reasoning_summaries", self.profile.reasoning_summaries))
+            if payload is None:
+                payload = self._build_request_payload(request)
+            adapter = request["adapter"]
         except (ProtocolError, KeyError) as exc:
             QMessageBox.warning(self, "Message not sent", str(exc))
             return
-        assistant = {
-            "id": uuid.uuid4().hex,
-            "role": "assistant",
-            "content": "",
-            "status": "streaming",
-            "created_at": utc_now(),
-            "request": deepcopy(request),
-        }
-        self.conversation.setdefault("messages", []).append(assistant)
-        self._persist_conversation()
+        if assistant is None:
+            assistant = self._new_assistant_message(request)
+            self.conversation.setdefault("messages", []).append(assistant)
+            try:
+                self._persist_conversation()
+            except OSError:
+                self.conversation["messages"].pop()
+                QMessageBox.warning(self, "Retry not sent", "Local history could not be saved. Try again after checking available disk space.")
+                return
         self._active_message = assistant
         self._active_card = self._insert_message(assistant)
         count = len(request.get("context_keys") or [])
@@ -1446,6 +1641,12 @@ class CopilotDock(QDockWidget):
     def _retry_message(self, message: dict[str, Any], retry_auto: bool) -> None:
         if self._active_message is not None:
             return
+        if self._editing_message_id is not None:
+            self._toast("Finish or cancel your question edit before retrying")
+            return
+        if not message.get("id") or not any(item.get("id") == message["id"] for item in self.conversation.get("messages", [])):
+            self._toast("This answer was replaced; use the current question instead")
+            return
         request = deepcopy(message.get("request") or {})
         if retry_auto:
             request["thinking"] = "Auto"
@@ -1475,6 +1676,7 @@ class CopilotDock(QDockWidget):
         self.send_button.style().unpolish(self.send_button)
         self.send_button.style().polish(self.send_button)
         self._refresh_send_enabled()
+        self._refresh_message_editors()
 
     def _show_chats_menu(self) -> None:
         menu = QMenu(self)
@@ -1577,6 +1779,14 @@ class CopilotDock(QDockWidget):
         self._render_conversation()
 
     def _clear_attachment_payloads(self) -> None:
+        if self._editing_message_id:
+            self._cancel_edit_question()
+            if not self._closing:
+                QTimer.singleShot(0, self._notify_edit_cancelled)
+        self._editing_message_id = None
+        self._edit_draft_backup = None
+        self._edit_missing_attachments.clear()
+        self._set_editing_state(False)
         self._capture_timer.stop()
         self.attachment_status.clear()
         if self._attachment_task is not None:
@@ -1588,6 +1798,9 @@ class CopilotDock(QDockWidget):
         self._attachment_payloads.clear()
         self._refresh_attachment_chips()
         self._refresh_send_enabled()
+
+    def _notify_edit_cancelled(self) -> None:
+        self._toast("Edit cancelled; previous draft restored. Re-attach files in this context.")
 
     def _toast(self, text: str) -> None:
         self.privacy_label.setText(QFontMetrics(self.privacy_label.font()).elidedText(text, Qt.ElideRight, max(100, self.width() - 24)))

@@ -7,7 +7,7 @@ The Python package is imported by QGIS through `classFactory`. The protocol and 
 - `python3 -m unittest discover -s tests`: pure protocol/storage/attachment helpers.
 - `python3 scripts/check_public_release.py`: repository privacy checks.
 - `python3 scripts/build_plugin.py`: deterministic, source-only plugin ZIP.
-- `python3 scripts/run_qgis_tests.py`: seven native suites using the current interpreter's QGIS installation, including network, lifecycle, attachments, image compression, composer layout, request progress, and Responses activity.
+- `python3 scripts/run_qgis_tests.py`: eight native suites using the current interpreter's QGIS installation, including network, lifecycle, attachments, image compression, composer layout, request progress, Responses activity, and message footers/question editing.
 
 The native suites generate polygon/point layers, image pixels, and PDF pages. They never require a real project, router endpoint, or credential. Set `QT_QPA_PLATFORM=offscreen` for headless execution. `QGIS_PREFIX_PATH` is respected; otherwise normal installation defaults are used, with a standard macOS bundle fallback.
 

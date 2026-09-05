@@ -25,7 +25,7 @@ Screenshots in this repository use generated test data only.
 
 ## Install
 
-1. Download **[qgis_ai_copilot-0.4.0-alpha.zip](https://github.com/tangjia469-collab/qgis-ai-copilot/releases/download/v0.4.0-alpha/qgis_ai_copilot-0.4.0-alpha.zip)** from the [Releases page](https://github.com/tangjia469-collab/qgis-ai-copilot/releases). Use the plugin ZIP, not GitHub's automatically generated source archive.
+1. Download **[qgis_ai_copilot-0.4.1-alpha.zip](https://github.com/tangjia469-collab/qgis-ai-copilot/releases/download/v0.4.1-alpha/qgis_ai_copilot-0.4.1-alpha.zip)** from the [Releases page](https://github.com/tangjia469-collab/qgis-ai-copilot/releases). Use the plugin ZIP, not GitHub's automatically generated source archive.
 2. In QGIS, open **Plugins → Manage and Install Plugins → Install from ZIP**.
 3. Select the ZIP and enable **QGIS AI Copilot**.
 4. Open its settings, enter your router's Base URL, and configure authentication as described below.
@@ -52,6 +52,12 @@ Responses mode adds an expandable **Activity** section above the final answer. I
 The default **Chat idle timeout** is 600 seconds (Settings allows 30–3600 seconds). Receiving bytes or heartbeat events resets it, so an active stream is not cut off by the old 90-second total timer. A one-hour total cap and 32 MiB response cap still apply. Catalog timeout is separate. QGIS's reply-local timeout is aligned without changing the application's global network timeout.
 
 Click **Stop** on the active message or the composer Stop icon to disconnect immediately; partial answer text is retained and late events are ignored. Upstream routers may have shorter timeouts or may continue computation/billing after a client disconnect. Retry is explicit, never automatic.
+
+### Compact messages and editing the latest question
+
+Assistant answers keep their model, thinking level, timestamp, and small two-page Copy icon in the footer. Long model labels are elided with full details on hover. User questions use compact neutral cards; **Show more** expands the full original text.
+
+Click the **pencil icon on the latest question** to edit it in the composer, then Send to replace that question and its old answer. Nothing changes in history until validation and any send confirmation succeed. Cancel restores the draft that was in the composer before editing. Stop a running answer first. Retained files are reused; unavailable files must be re-attached or explicitly removed before resending. Local check results are preserved. A replaced answer's Retry button cannot revive the old prompt.
 
 ### Images, PDFs, and screen sharing
 

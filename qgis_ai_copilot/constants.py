@@ -4,7 +4,7 @@
 
 PLUGIN_ID = "qgis_ai_copilot"
 PLUGIN_NAME = "QGIS AI Copilot"
-PLUGIN_VERSION = "0.4.0-alpha"
+PLUGIN_VERSION = "0.4.1-alpha"
 SETTINGS_PREFIX = "qgis_ai_copilot"
 SCHEMA_VERSION = 1
 

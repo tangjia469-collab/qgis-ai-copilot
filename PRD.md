@@ -17,6 +17,7 @@ Help GIS users ask questions about their current work without repeatedly switchi
 - Image/PDF attachment intake, previews, removal, clipboard paste, and user-triggered screenshots.
 - Activity visibility: show local preparation milestones and, when explicitly enabled with Responses, router-provided commentary/public reasoning summaries with cancellation and error state.
 - Compact native UI: context details in Add context; model/thinking immediately beside Send.
+- Answer metadata and icon-only Copy belong in the message footer. User prompts are compact and expandable. The latest question may be edited and resent atomically; cancellation and invalid input do not change history. Revisions exclude the superseded answer from outgoing context and preserve local tool records.
 
 ## Release acceptance
 

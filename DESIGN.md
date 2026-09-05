@@ -17,3 +17,5 @@ An active answer has a compact status row: sending/waiting/receiving, elapsed `m
 When Responses activity summaries are enabled, an expandable Activity panel appears above the final answer. It contains router-provided commentary/public reasoning summaries and local preparation milestones only; raw reasoning is omitted. The assistant answer is a separate blue-tinted card.
 
 Validate 360, 420, and 460 pixel docks. Long model names are elided visually but remain available in tooltips/accessibility labels. No permanent Model, Thinking, or context/status rows sit above the conversation.
+
+Message metadata belongs below the body, not in a header. A compact footer shows model/Thinking/time and an unobtrusive 14 px overlapping-pages icon in a 22 px Copy target. Question cards show four lines by default and expand through Show more. Only the latest question exposes a small pencil icon. Editing uses the composer with a visible edit notice and Cancel; Send replaces that question and its following AI answers only after validation and consent. Local check rows remain. Cancel restores the pre-edit draft.

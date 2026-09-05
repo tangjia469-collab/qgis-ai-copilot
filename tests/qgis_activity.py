@@ -12,6 +12,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from qgis.PyQt.QtCore import QTimer
 from qgis.core import QgsApplication
+from qgis.PyQt.QtCore import QCoreApplication, QEvent
 
 from qgis_ai_copilot.network import RouterClient
 from qgis_ai_copilot.protocol import RouterProfile, build_responses_payload
@@ -162,6 +163,42 @@ class ActivityTests(unittest.TestCase):
         self.assertNotIn("/Users/private",encoded)
         self.assertNotIn("PRIVATE_",encoded)
 
+    def test_assistant_footer_is_compact_blue_copy_icon_and_latest_question_is_editable(self):
+        iface = FakeIface()
+        plugin = QgisAiCopilotPlugin(iface)
+        plugin.initGui()
+        dock = plugin.dock
+        user_one = {"id": "user-one", "role": "user", "content": "First question", "created_at": "2026-09-05T12:00:00+00:00"}
+        assistant_one = {"id": "assistant-one", "role": "assistant", "content": "First answer", "status": "complete", "request": {"model": "model-a", "thinking": "High"}, "created_at": "2026-09-05T12:00:01+00:00"}
+        user_two = {"id": "user-two", "role": "user", "content": "Latest question", "created_at": "2026-09-05T12:01:00+00:00"}
+        assistant_two = {"id": "assistant-two", "role": "assistant", "content": "Latest answer", "status": "complete", "request": {"model": "model-b", "thinking": "Auto"}, "created_at": "2026-09-05T12:01:01+00:00"}
+        dock.conversation = {"messages": [user_one, assistant_one, user_two, assistant_two]}
+        dock._render_conversation()
+        cards = dock.conversation_body.findChildren(MessageCard)
+        self.assertEqual(len(cards), 4)
+        first_user = next(card for card in cards if card.message["id"] == "user-one")
+        latest_user = next(card for card in cards if card.message["id"] == "user-two")
+        latest_assistant = next(card for card in cards if card.message["id"] == "assistant-two")
+        self.assertTrue(first_user.edit_button.isHidden())
+        self.assertFalse(latest_user.edit_button.isHidden())
+        self.assertEqual(latest_user.footer_meta.toolTip(), "You  |  2026-09-05 12:01")
+        self.assertIn("model-b", latest_assistant.footer_meta.toolTip())
+        self.assertIn("Thinking: Auto", latest_assistant.footer_meta.toolTip())
+        self.assertFalse(latest_assistant.copy_button.text())
+        self.assertFalse(latest_assistant.copy_button.icon().isNull())
+        self.assertTrue(latest_assistant.property("role") == "assistant")
+        dock._begin_edit_question(user_two)
+        self.assertEqual(dock.message_input.toPlainText(), "Latest question")
+        self.assertEqual(dock._editing_message_id, "user-two")
+        self.assertFalse(dock.edit_status.isHidden())
+        dock.message_input.setPlainText("Rewritten question")
+        dock._cancel_edit_question()
+        self.assertEqual(dock.message_input.toPlainText(), "")
+        self.assertIsNone(dock._editing_message_id)
+        plugin.unload()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        iface.window.close()
+
     def test_dock_sends_responses_and_preserves_activity_and_retry_adapter(self):
         iface=FakeIface()
         plugin=QgisAiCopilotPlugin(iface)
@@ -182,6 +219,16 @@ class ActivityTests(unittest.TestCase):
         self.assertTrue(any(item["kind"]=="summary" for item in answer["activity"]))
         saved=dock.store.load_conversation(dock.project_id,dock.conversation["id"])
         self.assertNotIn("PRIVATE_",json.dumps(saved))
+        latest_user = next(item for item in reversed(dock.conversation["messages"]) if item.get("role") == "user")
+        dock._begin_edit_question(latest_user)
+        dock.message_input.setPlainText("Rewrite the synthetic GIS question")
+        with patch("qgis_ai_copilot.dock.QMessageBox.question",return_value=QMessageBox.Yes):
+            wait_for(dock.client.chatCompleted,dock._send_or_stop)
+        user_messages = [item["content"] for item in dock.conversation["messages"] if item.get("role") == "user"]
+        self.assertEqual(user_messages, ["Rewrite the synthetic GIS question"])
+        self.assertEqual(len(dock.conversation["messages"]), 2)
+        self.assertIsNone(dock._editing_message_id)
+        answer = dock.conversation["messages"][-1]
         dock.profile=replace(self.profile,adapter="chat_completions",reasoning_summaries=False)
         wait_for(dock.client.chatCompleted,lambda:dock._retry_message(answer,False))
         self.assertEqual(ActivityHandler.calls[-1][0],"/v1/responses")

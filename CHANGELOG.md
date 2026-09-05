@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1-alpha — Compact message footers and question editing
+
+- Move model, thinking, and timestamp to a one-line footer with a small overlapping-pages Copy icon.
+- Compact user questions with a Show more/Show less control, preserving full text.
+- Edit the latest question and resend to replace its answer, with one pre-dispatch history commit.
+- Cancel restores the previous draft; cancelled/invalid sends leave the original answer untouched.
+- Retain attachment consent, require explicit handling of missing visuals, preserve local check records, and reject stale retries.
+
+
 ## 0.4.0-alpha — Live model activity and interruptible work
 
 - Optional Responses adapter with OpenAI public reasoning summaries and commentary events.
