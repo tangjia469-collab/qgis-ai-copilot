@@ -313,9 +313,20 @@ class RouterClient(QObject):
         self._chat_forced_error = ("tls", details or "TLS certificate validation failed.")
 
     def _chat_timeout(self) -> None:
-        if self._chat_reply is not None:
-            self._chat_forced_error = ("timeout", "No router activity within the chat idle timeout. Retry or increase Chat idle timeout in Settings; the provider may also impose its own limit.")
-            self._chat_reply.abort()
+        reply = self._chat_reply
+        if reply is None:
+            return
+        # readyRead and a timer can become runnable in the same event-loop
+        # turn. Buffered bytes count as activity even if readyRead lost the race.
+        self._chat_ready_read(reply)
+        if reply is not self._chat_reply:
+            return
+        remaining = self._chat_idle_ms - int((time.monotonic() - self._last_activity_at) * 1000)
+        if remaining > 0:
+            self._chat_timer.start(remaining)
+            return
+        self._chat_forced_error = ("timeout", "No router activity within the chat idle timeout. Retry or increase Chat idle timeout in Settings; the provider may also impose its own limit.")
+        reply.abort()
 
     def _chat_deadline_reached(self) -> None:
         if self._chat_reply is not None:

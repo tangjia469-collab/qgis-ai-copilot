@@ -10,7 +10,7 @@ from dataclasses import replace
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
-from qgis.PyQt.QtCore import QTimer
+from qgis.PyQt.QtCore import QTimer, QObject, QByteArray
 from qgis.core import QgsApplication, QgsNetworkAccessManager
 
 from qgis_ai_copilot.network import RouterClient
@@ -112,6 +112,39 @@ class RequestProgressTests(unittest.TestCase):
         self.assertEqual(kind, "timeout")
         self.assertIn("activity", message)
         self.assertEqual(partial, "First")
+
+    def test_buffered_activity_wins_over_a_pending_idle_timer(self):
+        # Control readyRead scheduling exactly; real loopback tests above cover
+        # transport. This reply already has a heartbeat buffered at the deadline.
+        class BufferedReply(QObject):
+            data = b": heartbeat\n\n"
+            aborted = False
+            def bytesAvailable(self):  # noqa: N802
+                return len(self.data)
+            def readAll(self):  # noqa: N802
+                data, self.data = self.data, b""
+                return QByteArray(data)
+            def attribute(self, _key):
+                return 200
+            def header(self, _key):
+                return "text/event-stream"
+            def abort(self):
+                self.aborted = True
+        reply = BufferedReply()
+        self.client._chat_reply = reply
+        self.client._chat_idle_ms = 180
+        self.client._last_activity_at = time.monotonic() - 10
+        self.client._started_at = self.client._last_activity_at
+        self.client._chat_timeout()
+        self.assertFalse(reply.aborted)
+        self.assertEqual(reply.bytesAvailable(), 0)
+        self.assertIsNone(self.client._chat_forced_error)
+
+    def test_direct_stop_inside_delta_does_not_append_later_content(self):
+        profile = self.profile()
+        self.client.chatDelta.connect(lambda _text:self.client.abort_chat())
+        events = collect_for([("stopped", self.client.chatStopped), ("done", self.client.chatCompleted)], lambda:self.client.send_chat(profile, self.payload("slow")), 600)
+        self.assertEqual(events, [("stopped", ("First",))])
 
     def test_stop_before_first_byte_is_immediate_and_single(self):
         profile = replace(self.profile(), chat_idle_timeout_seconds=1)
