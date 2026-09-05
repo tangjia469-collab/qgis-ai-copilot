@@ -49,6 +49,7 @@ def build_stylesheet(palette: QPalette) -> str:
     QLabel[kind="brand"] {{ font-size: 13px; font-weight: 650; }}
     QLabel[kind="project"] {{ font-weight: 600; }}
     QLabel[kind="meta"] {{ color: {_hex(subtle)}; font-size: 10px; }}
+    QPlainTextEdit[kind="activity"] {{ color: {_hex(subtle)}; font-size: 10px; padding: 1px 3px; background: transparent; }}
     QLabel[kind="muted"] {{ color: {_hex(muted)}; }}
     QLabel[state="connected"] {{ color: {_hex(success)}; }}
     QLabel[state="warning"] {{ color: {_hex(warning)}; }}
@@ -150,13 +151,19 @@ def build_stylesheet(palette: QPalette) -> str:
         border-color: {_hex(highlight)};
     }}
     QFrame[role="user"] {{
-        border: 0;
-        border-left: 2px solid {_hex(strong_border)};
-        background: transparent;
+        border: 1px solid {_hex(border)};
+        border-radius: 8px;
+        background: {_hex(surface)};
     }}
     QFrame[role="assistant"] {{
+        border: 1px solid {_hex(highlight)};
+        border-radius: 8px;
+        background: {_hex(_mix(window, highlight, 0.10 if dark else 0.07))};
+    }}
+    QFrame[role="activity"] {{
         border: 0;
-        background: transparent;
+        border-left: 2px solid {_hex(border)};
+        background: {_hex(surface)};
     }}
     QFrame[role="tool"] {{
         border: 1px solid {_hex(border)};

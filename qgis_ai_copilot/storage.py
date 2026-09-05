@@ -27,6 +27,8 @@ _PERSISTED_REQUEST_KEYS = {
     "context",
     "context_keys",
     "user_message_id",
+    "adapter",
+    "reasoning_summaries",
 }
 _ATTACHMENT_MANIFEST_KEYS = {
     "id",
@@ -126,6 +128,26 @@ def _sanitize_attachment_manifests(value: Any) -> list[dict[str, Any]]:
     return manifests
 
 
+def sanitized_activity(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    output = []
+    remaining = 24000
+    for item in value[:40]:
+        if not isinstance(item, dict) or item.get("kind") not in {"local", "commentary", "summary"}:
+            continue
+        raw = item.get("text")
+        if not isinstance(raw, str) or not raw:
+            continue
+        text = _redact_context_text(raw)[:min(8000, remaining)]
+        if not text:
+            break
+        identity = re.sub(r"[^A-Za-z0-9_.:-]", "", str(item.get("id") or ""))[:160]
+        output.append({"id": identity or str(len(output)), "kind": item["kind"], "text": text})
+        remaining -= len(text)
+    return output
+
+
 def sanitized_conversation(conversation: dict[str, Any]) -> dict[str, Any]:
     """Copy a conversation while enforcing a narrow persisted request schema."""
 
@@ -151,6 +173,8 @@ def sanitized_conversation(conversation: dict[str, Any]) -> dict[str, Any]:
             message["request"] = safe_request
         if "attachments" in message:
             message["attachments"] = _sanitize_attachment_manifests(message["attachments"])
+        if "activity" in message:
+            message["activity"] = sanitized_activity(message["activity"])
         if isinstance(message.get("tool_result"), dict):
             tool_result = _sanitize_context_value(message["tool_result"])
             if tool_result.get("tool") == "explain_processing_error" and isinstance(

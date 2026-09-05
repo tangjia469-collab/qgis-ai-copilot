@@ -65,6 +65,7 @@ from .protocol import (
     RouterProfile,
     bounded_chat_history,
     build_chat_payload,
+    build_responses_payload,
 )
 from .storage import ConversationStore, utc_now, _redact_context_text
 from .styles import build_stylesheet
@@ -384,6 +385,7 @@ class CopilotDock(QDockWidget):
         self.client.chatStopped.connect(self._chat_stopped)
         self.client.chatFailed.connect(self._chat_failed)
         self.client.chatProgress.connect(self._chat_progress)
+        self.client.chatActivity.connect(self._chat_activity)
 
         self.monitor.staleChanged.connect(self._context_stale_changed)
         self.monitor.projectIdentityChanged.connect(self._project_identity_changed)
@@ -1237,6 +1239,8 @@ class CopilotDock(QDockWidget):
             "context_keys": sorted(self.attached_keys),
             "user_message_id": user_message["id"],
             "router_id": self._router_identity(),
+            "adapter": self.profile.adapter,
+            "reasoning_summaries": self.profile.reasoning_summaries,
         }
         if attachment_manifests:
             request["attachments"] = attachment_manifests
@@ -1340,12 +1344,15 @@ class CopilotDock(QDockWidget):
             destination = request.get("destination")
             if destination and destination != (self.profile.base_url, self.profile.authcfg):
                 raise ProtocolError("The router connection changed. Attach the files in a new message before sending.")
-            payload = build_chat_payload(
-                model_id,
-                self._canonical_messages(request),
-                str(request.get("thinking") or "Auto"),
-                bool(request.get("stream", True)),
-            )
+            adapter = str(request.get("adapter") or self.profile.adapter)
+            messages = self._canonical_messages(request)
+            if adapter == "responses":
+                messages[0]["content"] += "\nWhen useful, give brief user-facing commentary updates before the final answer. Describe intended checks and conclusions, not raw internal reasoning. Never claim that a local GIS operation ran unless an attached result confirms it."
+                payload = build_responses_payload(model_id, messages, str(request.get("thinking") or "Auto"), bool(request.get("stream", True)), bool(request.get("reasoning_summaries", self.profile.reasoning_summaries)))
+            else:
+                payload = build_chat_payload(model_id, messages, str(request.get("thinking") or "Auto"), bool(request.get("stream", True)))
+            request["adapter"] = adapter
+            request["reasoning_summaries"] = bool(request.get("reasoning_summaries", self.profile.reasoning_summaries))
         except (ProtocolError, KeyError) as exc:
             QMessageBox.warning(self, "Message not sent", str(exc))
             return
@@ -1361,9 +1368,17 @@ class CopilotDock(QDockWidget):
         self._persist_conversation()
         self._active_message = assistant
         self._active_card = self._insert_message(assistant)
+        count = len(request.get("context_keys") or [])
+        self._active_card.add_activity({"id": "local:context", "kind": "local", "text": f"Prepared {count} selected QGIS context categories."})
+        if request.get("attachments"):
+            self._active_card.add_activity({"id": "local:attachments", "kind": "local", "text": f"Prepared {len(request['attachments'])} explicitly selected attachments."})
+        if adapter == "chat_completions":
+            self._active_card.add_activity({"id": "local:adapter", "kind": "local", "text": "Chat Completions mode does not supply Codex-style summaries. Use Responses and Activity summaries in Settings if the router supports them."})
+        elif not payload.get("stream"):
+            self._active_card.add_activity({"id": "local:adapter", "kind": "local", "text": "Streaming is off. Model updates will arrive with the completed response."})
         self._active_card.update_progress("sending", 0, 0)
         self._set_generating(True)
-        self.client.send_chat(self.profile, payload)
+        self.client.send_chat(self.profile, payload, adapter=adapter)
 
     def _router_identity(self) -> str:
         identity = json.dumps([self.profile.base_url.rstrip("/"), self.profile.authcfg], separators=(",", ":"))
@@ -1381,6 +1396,14 @@ class CopilotDock(QDockWidget):
     def _chat_progress(self, phase: str, elapsed: int, idle: int) -> None:
         if self._active_card is not None:
             self._active_card.update_progress(phase, elapsed, idle)
+
+    def _chat_activity(self, event: dict[str, Any]) -> None:
+        if self._active_card is not None:
+            bar = self.conversation_scroll.verticalScrollBar()
+            follow = bar.value() >= bar.maximum() - 4
+            self._active_card.add_activity(event)
+            if follow:
+                QTimer.singleShot(0, self._scroll_to_bottom)
 
     def _chat_completed(self, content: str, non_streaming: bool, usage: dict[str, Any]) -> None:
         status = "non_streaming" if non_streaming else "complete"

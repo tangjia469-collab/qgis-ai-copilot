@@ -17,6 +17,7 @@ from .constants import USER_AGENT
 from .protocol import (
     ProtocolError,
     RouterProfile,
+    ResponsesStream,
     SseDecoder,
     classify_router_error,
     endpoint_url,
@@ -54,6 +55,7 @@ class RouterClient(QObject):
     chatStopped = pyqtSignal(str)
     chatFailed = pyqtSignal(str, str, int, str)
     chatProgress = pyqtSignal(str, int, int)
+    chatActivity = pyqtSignal(object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -79,6 +81,9 @@ class RouterClient(QObject):
         self._phase = "sending"
         self._response_bytes = 0
         self._chat_streaming = True
+        self._chat_adapter = "chat_completions"
+        self._responses_stream = ResponsesStream()
+        self._model_activity_seen = False
         self._chat_raw = bytearray()
         self._chat_decoder = SseDecoder()
         self._chat_partial = ""
@@ -184,10 +189,14 @@ class RouterClient(QObject):
             reply.abort()
             reply.deleteLater()
 
-    def send_chat(self, profile: RouterProfile, payload: dict[str, Any]) -> None:
+    def send_chat(self, profile: RouterProfile, payload: dict[str, Any], adapter: str | None = None) -> None:
         self.abort_chat(silent=True)
         try:
-            url = endpoint_url(profile.base_url, "/v1/chat/completions")
+            self._chat_adapter = adapter or profile.adapter
+            if self._chat_adapter not in {"chat_completions", "responses"}:
+                raise ProtocolError("Unsupported API adapter. Choose Chat Completions or Responses in Settings.")
+            endpoint = "/v1/responses" if self._chat_adapter == "responses" else "/v1/chat/completions"
+            url = endpoint_url(profile.base_url, endpoint)
             accept = b"text/event-stream, application/json" if payload.get("stream") else b"application/json"
             request = self._request(url, profile, accept)
         except ProtocolError as exc:
@@ -202,6 +211,8 @@ class RouterClient(QObject):
         self._chat_streaming = bool(payload.get("stream"))
         self._chat_raw = bytearray()
         self._chat_decoder = SseDecoder()
+        self._responses_stream = ResponsesStream()
+        self._model_activity_seen = False
         self._chat_partial = ""
         self._chat_done = False
         self._chat_cancel_requested = False
@@ -292,6 +303,20 @@ class RouterClient(QObject):
             for data in self._chat_decoder.feed(chunk):
                 if reply is not self._chat_reply:
                     return
+                if self._chat_adapter == "responses":
+                    events = self._responses_stream.feed(data)
+                    self._chat_partial = self._responses_stream.answer
+                    for kind, value in events:
+                        if reply is not self._chat_reply:
+                            return
+                        if kind == "activity":
+                            self._emit_model_activity(value)
+                        elif kind == "delta":
+                            self._phase = "receiving"
+                            self.chatDelta.emit(value)
+                        elif kind == "completed":
+                            self._chat_done = True
+                    continue
                 kind, value = parse_sse_chat_data(data)
                 if kind == "done":
                     self._chat_done = True
@@ -305,6 +330,15 @@ class RouterClient(QObject):
         except ProtocolError as exc:
             self._chat_forced_error = ("broken_stream", str(exc))
             reply.abort()
+
+    def _emit_model_activity(self, event: dict[str, Any]) -> None:
+        if event.get("kind") in {"summary", "commentary"}:
+            self._model_activity_seen = True
+        self.chatActivity.emit(event)
+
+    def _activity_unavailable_notice(self) -> None:
+        if self._chat_adapter == "responses" and not self._model_activity_seen:
+            self.chatActivity.emit({"id": "model:unavailable", "kind": "local", "text": "The router did not supply model progress text for this response."})
 
     def _chat_ssl_errors(self, reply: QNetworkReply, errors: list[Any]) -> None:
         if reply is not self._chat_reply:
@@ -362,20 +396,31 @@ class RouterClient(QObject):
             if not self._chat_done:
                 self.chatFailed.emit(
                     "broken_stream",
-                    "The streaming response ended before the [DONE] event.",
+                    "The streaming response ended before its completion event.",
                     status,
                     self._chat_partial,
                 )
             elif not self._chat_partial:
                 self.chatFailed.emit("protocol", "The streaming response was empty.", status, "")
             else:
-                self.chatCompleted.emit(self._chat_partial, False, {})
+                self._activity_unavailable_notice()
+                usage = self._responses_stream.usage if self._chat_adapter == "responses" else {}
+                self.chatCompleted.emit(self._chat_partial, False, usage)
         else:
             try:
-                content, usage = parse_chat_response(bytes(self._chat_raw))
-            except ProtocolError as exc:
+                if self._chat_adapter == "responses":
+                    response = json.loads(bytes(self._chat_raw))
+                    events = self._responses_stream.feed(json.dumps({"type": "response.completed", "response": response}))
+                    for kind, value in events:
+                        if kind == "activity":
+                            self._emit_model_activity(value)
+                    content, usage = self._responses_stream.answer, self._responses_stream.usage
+                else:
+                    content, usage = parse_chat_response(bytes(self._chat_raw))
+            except (ProtocolError, ValueError, UnicodeError) as exc:
                 self.chatFailed.emit("protocol", str(exc), status, self._chat_partial)
             else:
+                self._activity_unavailable_notice()
                 self.chatCompleted.emit(content, True, usage)
         reply.deleteLater()
 

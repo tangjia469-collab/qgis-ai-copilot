@@ -97,6 +97,14 @@ class RouterSettingsDialog(QDialog):
         form.addRow("Context", self.context_trust_check)
         self.streaming_check = QCheckBox("Stream responses", connection)
         form.addRow("Delivery", self.streaming_check)
+        self.adapter_combo = QComboBox(connection)
+        self.adapter_combo.addItem("Chat Completions", "chat_completions")
+        self.adapter_combo.addItem("Responses (live model activity)", "responses")
+        form.addRow("API", self.adapter_combo)
+        self.summary_check = QCheckBox("Request model activity summaries", connection)
+        self.summary_check.setToolTip("Only public summaries supplied by the model are shown. Requires Responses support; availability and timing vary by router/model. No raw reasoning is displayed.")
+        form.addRow("Activity", self.summary_check)
+        self.adapter_combo.currentIndexChanged.connect(lambda: self.summary_check.setEnabled(self.adapter_combo.currentData() == "responses"))
         self.timeout_spin = QSpinBox(connection)
         self.timeout_spin.setRange(10, 600)
         self.timeout_spin.setSuffix(" s")
@@ -176,6 +184,9 @@ class RouterSettingsDialog(QDialog):
         self.auth_select.setConfigId(profile.authcfg)
         self.context_trust_check.setChecked(self.settings.is_context_trusted(profile))
         self.streaming_check.setChecked(profile.streaming)
+        self.adapter_combo.setCurrentIndex(self.adapter_combo.findData(profile.adapter))
+        self.summary_check.setChecked(profile.reasoning_summaries)
+        self.summary_check.setEnabled(profile.adapter == "responses")
         self.timeout_spin.setValue(profile.timeout_seconds)
         self.chat_idle_spin.setValue(profile.chat_idle_timeout_seconds)
         self.retention_spin.setValue(self.settings.history_retention_days())
@@ -195,6 +206,8 @@ class RouterSettingsDialog(QDialog):
             streaming=self.streaming_check.isChecked(),
             timeout_seconds=self.timeout_spin.value(),
             chat_idle_timeout_seconds=self.chat_idle_spin.value(),
+            adapter=str(self.adapter_combo.currentData()),
+            reasoning_summaries=self.summary_check.isChecked() and self.adapter_combo.currentData() == "responses",
         )
 
     def _save(self) -> None:

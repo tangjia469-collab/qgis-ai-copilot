@@ -11,6 +11,7 @@ SUITES = (
     "qgis_network_smoke", "qgis_smoke", "qgis_attachment_smoke",
     "qgis_image_compression", "qgis_composer_layout",
     "qgis_request_progress",
+    "qgis_activity",
 )
 
 if __name__ == "__main__":

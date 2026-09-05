@@ -29,6 +29,8 @@ class RouterProfile:
     streaming: bool = True
     timeout_seconds: int = 90
     chat_idle_timeout_seconds: int = 600
+    adapter: str = "chat_completions"
+    reasoning_summaries: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -51,6 +53,8 @@ class RouterProfile:
             streaming=bool(value.get("streaming", True)),
             timeout_seconds=max(10, min(timeout, 600)),
             chat_idle_timeout_seconds=max(30, min(chat_idle, 3600)),
+            adapter="responses" if value.get("adapter") == "responses" else "chat_completions",
+            reasoning_summaries=value.get("reasoning_summaries") is True,
         )
 
 
@@ -263,6 +267,141 @@ def build_chat_payload(
     if thinking != "Auto":
         payload["reasoning_effort"] = thinking_api_value(thinking)
     return payload
+
+
+def build_responses_payload(
+    model: str, messages: Iterable[dict[str, Any]], thinking: str = "Auto",
+    stream: bool = True, reasoning_summaries: bool = False,
+) -> dict[str, Any]:
+    canonical = build_chat_payload(model, messages, thinking, stream)
+    inputs, instructions = [], []
+    for message in canonical["messages"]:
+        role, content = message["role"], message["content"]
+        if role == "system":
+            instructions.append(content)
+            continue
+        if isinstance(content, list):
+            content = [
+                {"type": "input_text", "text": part["text"]}
+                if part["type"] == "text"
+                else {"type": "input_image", "image_url": part["image_url"]["url"]}
+                for part in content
+            ]
+        inputs.append({"role": role, "content": content})
+    payload = {"model": canonical["model"], "input": inputs, "stream": bool(stream), "store": False}
+    if instructions:
+        payload["instructions"] = "\n\n".join(instructions)
+    reasoning = {}
+    if thinking != "Auto":
+        reasoning["effort"] = thinking_api_value(thinking)
+    if reasoning_summaries:
+        reasoning["summary"] = "auto"
+    if reasoning:
+        payload["reasoning"] = reasoning
+    return payload
+
+
+class ResponsesStream:
+    """Decode public summaries/commentary separately from the final answer.
+
+    Raw reasoning, encrypted items, and unrequested tool arguments are ignored.
+    Activity updates are full snapshots keyed by item/part for deduplication.
+    """
+
+    def __init__(self) -> None:
+        self.phases: dict[str, str] = {}
+        self.indices: dict[str, str] = {}
+        self.texts: dict[str, str] = {}
+        self.summaries: dict[str, str] = {}
+        self.completed = False
+        self.usage: dict[str, Any] = {}
+
+    @property
+    def answer(self) -> str:
+        return "\n\n".join(text for key, text in self.texts.items() if self.phases.get(key) != "commentary")
+
+    def _key(self, event: dict[str, Any]) -> str:
+        return str(event.get("item_id") or self.indices.get(str(event.get("output_index", 0))) or event.get("output_index", 0))[:128]
+
+    def _summary(self, key: str, text: str, append: bool = False) -> list[tuple[str, Any]]:
+        if key not in self.summaries and len(self.summaries) >= 32:
+            return []
+        old = self.summaries.get(key, "")
+        value = ((old + text) if append else text)[:8000]
+        if value == old:
+            return []
+        self.summaries[key] = value
+        return [("activity", {"id": f"summary:{key}", "kind": "summary", "text": value})]
+
+    def _item(self, item: dict[str, Any], index: int = 0) -> list[tuple[str, Any]]:
+        key = str(item.get("id") or index)[:128]
+        self.indices[str(index)] = key
+        output = []
+        if item.get("type") == "message":
+            self.phases[key] = str(item.get("phase") or "final_answer")
+            content = item.get("content", [])
+            text = "".join(str(part.get("text") or part.get("refusal") or "") for part in content if isinstance(part, dict) and part.get("type") in {"output_text", "refusal"}) if isinstance(content, list) else ""
+            if text:
+                self.texts[key] = text
+                if self.phases[key] == "commentary":
+                    output.append(("activity", {"id": f"commentary:{key}", "kind": "commentary", "text": text[:8000]}))
+        elif item.get("type") == "reasoning":
+            for number, part in enumerate(item.get("summary") or []):
+                if isinstance(part, dict) and part.get("type") == "summary_text" and isinstance(part.get("text"), str):
+                    output.extend(self._summary(f"{key}:{number}", part["text"]))
+        return output
+
+    def feed(self, data: str) -> list[tuple[str, Any]]:
+        if data.strip() == "[DONE]":
+            return []  # Responses requires its own completed event.
+        try:
+            event = json.loads(data)
+        except (ValueError, TypeError) as exc:
+            raise ProtocolError("Responses stream contains invalid JSON.") from exc
+        if not isinstance(event, dict):
+            raise ProtocolError("Responses event must be an object.")
+        kind = event.get("type")
+        if kind in {"response.failed", "response.incomplete", "error"}:
+            response = event.get("response") or event
+            detail = response.get("error") or response.get("incomplete_details") or response
+            raise ProtocolError(str(detail.get("message") or detail.get("reason") or "The provider did not complete this response."))
+        if kind in {"response.created", "response.in_progress"}:
+            return [("activity", {"id": "router:accepted", "kind": "local", "text": "Router accepted the request."})]
+        if kind in {"response.output_item.added", "response.output_item.done"}:
+            item = event.get("item")
+            return self._item(item, event.get("output_index", 0)) if isinstance(item, dict) else []
+        if kind in {"response.reasoning_summary_text.delta", "response.reasoning_summary_text.done"}:
+            text = event.get("delta" if kind.endswith(".delta") else "text")
+            if not isinstance(text, str):
+                return []
+            return self._summary(f"{self._key(event)}:{event.get('summary_index', 0)}", text, kind.endswith(".delta"))
+        if kind in {"response.output_text.delta", "response.refusal.delta"}:
+            text = event.get("delta")
+            if not isinstance(text, str):
+                return []
+            key = self._key(event)
+            separator = "\n\n" if key not in self.texts and self.answer and self.phases.get(key) != "commentary" else ""
+            self.texts[key] = self.texts.get(key, "") + text
+            if self.phases.get(key) == "commentary":
+                return [("activity", {"id": f"commentary:{key}", "kind": "commentary", "text": self.texts[key][:8000]})]
+            return [("delta", separator + text)]
+        if kind == "response.completed":
+            response = event.get("response") or {}
+            if not isinstance(response, dict):
+                raise ProtocolError("Malformed completed response.")
+            if response.get("error") or response.get("status") in {"failed", "incomplete"}:
+                raise ProtocolError("The provider did not complete this response.")
+            output = []
+            for index, item in enumerate(response.get("output") or []):
+                if isinstance(item, dict):
+                    output.extend(self._item(item, index))
+            if not self.answer:
+                raise ProtocolError("Responses completed without a final answer. No tools were executed.")
+            self.completed = True
+            self.usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
+            output.append(("completed", self.answer))
+            return output
+        return []
 
 
 def bounded_chat_history(

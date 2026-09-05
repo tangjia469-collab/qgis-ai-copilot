@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0-alpha — Live model activity and interruptible work
+
+- Optional Responses adapter with OpenAI public reasoning summaries and commentary events.
+- Expandable, deduplicated Activity panel separated from the final answer; raw reasoning is ignored.
+- Settings controls for Responses mode and model activity summaries; no silent adapter fallback.
+- Chat Completions remains the default compatibility path and shows honest local/transport milestones.
+- Progress/attachment tests cover activity privacy, cancellation, non-streaming Responses, unsupported endpoints, and persisted sanitization.
+
 ## 0.3.1-alpha — First packaged public release
 
 - Observable sending/waiting/receiving status, elapsed time, and a message-level Stop button.

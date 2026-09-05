@@ -25,7 +25,7 @@ Screenshots in this repository use generated test data only.
 
 ## Install
 
-1. Download **[qgis_ai_copilot-0.3.1-alpha.zip](https://github.com/tangjia469-collab/qgis-ai-copilot/releases/download/v0.3.1-alpha/qgis_ai_copilot-0.3.1-alpha.zip)** from the [Releases page](https://github.com/tangjia469-collab/qgis-ai-copilot/releases). Use the plugin ZIP, not GitHub's automatically generated source archive.
+1. Download **[qgis_ai_copilot-0.4.0-alpha.zip](https://github.com/tangjia469-collab/qgis-ai-copilot/releases/download/v0.4.0-alpha/qgis_ai_copilot-0.4.0-alpha.zip)** from the [Releases page](https://github.com/tangjia469-collab/qgis-ai-copilot/releases). Use the plugin ZIP, not GitHub's automatically generated source archive.
 2. In QGIS, open **Plugins → Manage and Install Plugins → Install from ZIP**.
 3. Select the ZIP and enable **QGIS AI Copilot**.
 4. Open its settings, enter your router's Base URL, and configure authentication as described below.
@@ -39,12 +39,15 @@ For an existing installation, unload the plugin before upgrading. Save any tempo
 - Authentication: select a QGIS Authentication Manager configuration. For bearer-key routers, create an **API Header** configuration with header `Authorization` and value `Bearer YOUR_API_KEY`. Set or unlock the QGIS authentication master password as prompted.
 - Click **Test and load models**, then select a model from the switch immediately left of Send.
 - `Thinking: Auto` omits `reasoning_effort`; explicit values come from router metadata or your local capability configuration. Models are never silently changed.
+- Choose **Responses (live model activity)** in Settings when your router supports `/v1/responses`. Enable **Request model activity summaries** to see user-facing commentary and public reasoning summaries in the expandable Activity panel. Raw chain-of-thought is never requested or displayed; routers may provide no summary.
 
 API usage is billed by your router/provider. No credentials are included in this repository. ChatGPT subscription access alone is not an API key.
 
-### Long requests and Stop
+### Live activity, long requests, and Stop
 
 Each active answer shows real request status (**Sending request → Waiting for answer → Receiving answer**), elapsed time, and time since recent router activity. These are transport milestones, not a fabricated completion percentage or the model's private reasoning.
+
+Responses mode adds an expandable **Activity** section above the final answer. It shows only router-provided commentary and public reasoning summaries, plus small local milestones such as context preparation. The final answer remains a separate blue card. The Activity panel is open while the response is running and collapses when it completes; updates are bounded and deduplicated. If the router sends no activity text, the panel says so.
 
 The default **Chat idle timeout** is 600 seconds (Settings allows 30–3600 seconds). Receiving bytes or heartbeat events resets it, so an active stream is not cut off by the old 90-second total timer. A one-hour total cap and 32 MiB response cap still apply. Catalog timeout is separate. QGIS's reply-local timeout is aligned without changing the application's global network timeout.
 
@@ -67,7 +70,7 @@ QGIS context defaults to metadata: active layer, field schema, selection count, 
 
 You can explicitly enable **Automatically send selected QGIS metadata** for one router/authentication configuration. Changing either revokes that trust. This option does **not** authorize image/PDF sending: visual requests, including retained chat images and retries, ask for confirmation separately.
 
-Visual payloads remain in a bounded in-memory cache. Only attachment manifests are saved locally; image/PDF bytes, source paths, and API keys are not saved in chat history. Private PDF rendering scratch files are removed after preparation. Restarting, switching chats/projects/routers, or cache eviction may require re-attaching an earlier image. Chat text and sanitized metadata are retained for 30 days by default (configurable).
+Visual payloads remain in a bounded in-memory cache. Only attachment manifests are saved locally; image/PDF bytes, source paths, API keys, raw SSE events, and private reasoning are not saved in chat history. Public Activity text is sanitized and bounded before optional local retention. Private PDF rendering scratch files are removed after preparation. Restarting, switching chats/projects/routers, or cache eviction may require re-attaching an earlier image. Chat text and sanitized metadata are retained for 30 days by default (configurable).
 
 Explicit screenshots/files may contain personal data. Review them before sending. Your router and upstream model provider have their own retention policies; deleting local chats does not delete their copies. See [SECURITY.md](SECURITY.md).
 

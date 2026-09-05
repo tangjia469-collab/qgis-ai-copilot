@@ -28,6 +28,7 @@ from qgis.PyQt.QtWidgets import (
 )
 
 from .protocol import ProtocolError, normalized_external_link
+from .storage import sanitized_activity
 
 
 # FlowLayout follows Qt's BSD-3-Clause example; see THIRD_PARTY_NOTICES.md.
@@ -210,6 +211,25 @@ class SafeTextBrowser(QTextBrowser):
         QTimer.singleShot(0, self._resize_to_document)
 
 
+class ActivityBrowser(QPlainTextEdit):
+    """Bounded plain-text activity log that cannot recursively relayout the dock."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setReadOnly(True)
+        self.setFrameShape(QFrame.NoFrame)
+        self.setMaximumHeight(230)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setProperty("kind", "activity")
+
+    def set_content(self, content: str) -> None:
+        self.setPlainText(content)
+
+    def scroll_to_end(self) -> None:
+        self.verticalScrollBar().setValue(self.verticalScrollBar().maximum())
+
+
 class MessageCard(QFrame):
     retryRequested = pyqtSignal(object, bool)
     stopRequested = pyqtSignal()
@@ -221,13 +241,18 @@ class MessageCard(QFrame):
         self.setProperty("role", "user" if role == "user" else "assistant")
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(9 if role == "user" else 3, 6, 3, 7)
-        layout.setSpacing(4)
+        layout.setContentsMargins(
+            8 if role == "user" else 9,
+            4 if role == "user" else 7,
+            8 if role == "user" else 9,
+            4 if role == "user" else 7,
+        )
+        layout.setSpacing(3)
 
         header = QHBoxLayout()
         self.meta = QLabel(self._meta_text(), self)
         self.meta.setWordWrap(True)
-        self.meta.setProperty("kind", "meta")
+        self.meta.setProperty("kind", "user-meta" if role == "user" else "meta")
         header.addWidget(self.meta, 1)
         if role == "assistant" or message.get("content"):
             copy_button = QToolButton(self)
@@ -237,9 +262,29 @@ class MessageCard(QFrame):
             header.addWidget(copy_button)
         layout.addLayout(header)
 
+        self.activity_panel = QFrame(self)
+        self.activity_panel.setProperty("role", "activity")
+        activity_layout = QVBoxLayout(self.activity_panel)
+        activity_layout.setContentsMargins(7, 4, 7, 4)
+        activity_layout.setSpacing(3)
+        self.activity_toggle = QToolButton(self.activity_panel)
+        self.activity_toggle.setCheckable(True)
+        self.activity_toggle.setChecked(message.get("status") == "streaming")
+        self.activity_toggle.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.activity_toggle.setAccessibleName("Expand or collapse model activity")
+        self.activity_view = ActivityBrowser(self.activity_panel)
+        self.activity_toggle.toggled.connect(self.activity_view.setVisible)
+        self.activity_toggle.toggled.connect(lambda checked: self.activity_toggle.setArrowType(Qt.DownArrow if checked else Qt.RightArrow))
+        activity_layout.addWidget(self.activity_toggle, 0, Qt.AlignLeft)
+        activity_layout.addWidget(self.activity_view)
+        layout.addWidget(self.activity_panel)
+        self._render_activity()
+
         self.body = SafeTextBrowser(self)
         self.body.set_content(str(message.get("content") or ""), role == "assistant")
         self.body.setVisible(bool(message.get("content")))
+        if role == "user":
+            self.body.setMaximumHeight(68)
         layout.addWidget(self.body)
         attachments = message.get("attachments")
         if isinstance(attachments, list) and attachments:
@@ -279,6 +324,37 @@ class MessageCard(QFrame):
         thinking = detail.get("thinking") or "Auto"
         timestamp = str(self.message.get("created_at") or "").replace("T", " ")[:16]
         return f"Assistant  |  {model}  |  Thinking: {thinking}  |  {timestamp}"
+
+    def add_activity(self, event: dict[str, Any]) -> None:
+        safe = sanitized_activity([event])
+        if not safe:
+            return
+        entries = list(self.message.get("activity") or [])
+        entry = safe[0]
+        for index, old in enumerate(entries):
+            if old.get("id") == entry["id"]:
+                if old == entry:
+                    return
+                entries[index] = entry
+                break
+        else:
+            entries.append(entry)
+        self.message["activity"] = sanitized_activity(entries)
+        self._render_activity()
+
+    def _render_activity(self) -> None:
+        items = sanitized_activity(self.message.get("activity"))
+        self.activity_panel.setVisible(bool(items))
+        self.activity_toggle.setText(f"Activity · {len(items)} updates")
+        self.activity_toggle.setArrowType(Qt.DownArrow if self.activity_toggle.isChecked() else Qt.RightArrow)
+        headings = {"local": "QGIS / connection", "commentary": "Model update", "summary": "Reasoning summary"}
+        text = "\n\n".join(f"{headings[item['kind']]}\n{item['text']}" for item in items)
+        bar = self.activity_view.verticalScrollBar()
+        follow = bar.value() >= bar.maximum() - 4
+        self.activity_view.set_content(text)
+        self.activity_view.setVisible(self.activity_toggle.isChecked())
+        if follow and items:
+            QTimer.singleShot(0, self.activity_view.scroll_to_end)
 
     def _status_text(self) -> str:
         status = str(self.message.get("status") or "complete")
@@ -323,6 +399,9 @@ class MessageCard(QFrame):
             "stopping": "Stopping",
         }
         label = labels.get(phase, "Waiting for answer")
+        milestones = {"sending": "Sending the prepared request to the router.", "receiving": "Receiving the final answer.", "stopping": "Stopping the request."}
+        if phase in milestones:
+            self.add_activity({"id": f"transport:{phase}", "kind": "local", "text": milestones[phase]})
         elapsed = f"{elapsed_seconds // 60:02d}:{elapsed_seconds % 60:02d}"
         activity = f" · Last activity {idle_seconds}s ago" if idle_seconds >= 5 else ""
         self.status_label.setText(f"{label} · {elapsed}{activity}")
@@ -343,6 +422,8 @@ class MessageCard(QFrame):
         self.body.setVisible(bool(content))
         self.status_label.setText(self._status_text())
         self._add_retry_controls()
+        if status in {"complete", "non_streaming"}:
+            self.activity_toggle.setChecked(False)
 
     def _copy(self) -> None:
         QApplication.clipboard().setText(str(self.message.get("content") or ""))
