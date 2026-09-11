@@ -1,5 +1,28 @@
 # Third-party notices
 
+## Lucide composer icons
+
+The paperclip, arrow-up, square and chevron-down paths in `composer_icons.py` are
+derived from Lucide 0.468.0, with palette-aware rendering and stroke adjustments.
+Source: https://github.com/lucide-icons/lucide/tree/0.468.0/icons
+
+ISC License
+
+Copyright (c) for portions of Lucide are held by Cole Bemis 2013-2022 as part of
+Feather (MIT). All other copyright (c) for Lucide are held by Lucide Contributors 2022.
+
+Permission to use, copy, modify, and/or distribute this software for any
+purpose with or without fee is hereby granted, provided that the above
+copyright notice and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+
 ## Qt Flow Layout example
 
 The `FlowLayout` in `qgis_ai_copilot/widgets.py` follows Qt's Flow Layout example, adapted to PyQGIS. Attribution is retained for the upstream Python example:
@@ -38,4 +61,3 @@ POSSIBILITY OF SUCH DAMAGE.
 ## External dependencies
 
 QGIS, Qt, PyQt, GDAL/PROJ, and Poppler are provided by the user's system and are not bundled in the plugin ZIP. Their respective licenses apply. QGIS theme icons are requested from the installed QGIS application; this repository does not redistribute those theme assets.
-

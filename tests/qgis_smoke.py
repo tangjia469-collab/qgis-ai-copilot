@@ -30,6 +30,7 @@ class FakeIface(QObject):
         self.canvas = QgsMapCanvas(self.window)
         self.window.setCentralWidget(self.canvas)
         self._active_layer = None
+        self.toolbar_actions = []
 
     def mainWindow(self):  # noqa: N802
         return self.window
@@ -56,11 +57,12 @@ class FakeIface(QObject):
     def removePluginMenu(self, *args):  # noqa: N802
         pass
 
-    def addToolBarIcon(self, *args):  # noqa: N802
-        pass
+    def addToolBarIcon(self, action):  # noqa: N802
+        self.toolbar_actions.append(action)
 
-    def removeToolBarIcon(self, *args):  # noqa: N802
-        pass
+    def removeToolBarIcon(self, action):  # noqa: N802
+        if action in self.toolbar_actions:
+            self.toolbar_actions.remove(action)
 
 
 def main() -> int:
@@ -81,6 +83,12 @@ def main() -> int:
     plugin.initGui()
     dock = plugin.dock
     assert dock is not None
+    assert plugin.action is not None
+    assert plugin.action.text() == "Assist"
+    assert plugin.action.iconText() == "Assist"
+    assert plugin.action.toolTip() == "Open Assist"
+    assert not plugin.action.icon().isNull()
+    assert plugin.action in iface.toolbar_actions
     iface.window.resize(1100, 760)
     iface.window.show()
     app.processEvents()
@@ -121,7 +129,9 @@ def main() -> int:
         timeout_seconds=90,
     )
     dock.settings.save_profile(fixture_profile)
+    dock.settings.save_automatic_read_access(False)  # Explicitly exercise optional review mode.
     dock.settings.clear_context_trust()
+    dock.settings.clear_visual_trust()
     dock.profile = fixture_profile
     with patch("qgis_ai_copilot.dock.QMessageBox") as message_box:
         message_box.Yes = QMessageBox.Yes
@@ -146,6 +156,19 @@ def main() -> int:
         assert set(stored_trust) == {"base_url", "authcfg"}
         assert dock._confirm_context_send() is True
         message_box.question.assert_not_called()
+
+        dock.settings.clear_visual_trust()
+        assert not dock.settings.is_visual_trusted(fixture_profile)
+        assert dock.settings.has_visual_trust_decision()
+        dock.settings.trust_visuals(fixture_profile)
+        assert dock.settings.is_visual_trusted(fixture_profile)
+        visual_trust = json.loads(
+            dock.settings.settings.value(dock.settings._key("visual_trust"), "")
+        )
+        assert visual_trust == {
+            "authcfg": "fixture-auth",
+            "base_url": "https://router.example",
+        }
 
         harmless_change = RouterProfile(
             name="Renamed Fixture",
@@ -177,6 +200,7 @@ def main() -> int:
         )
         dock.settings.save_profile(changed_auth)
         assert not dock.settings.is_context_trusted(changed_auth)
+        assert not dock.settings.is_visual_trusted(changed_auth)
 
         dock.profile = changed_auth
         dock._confirmed_context_signature = None
@@ -188,9 +212,10 @@ def main() -> int:
     dock.settings.trust_context(changed_auth)
 
     browser = SafeTextBrowser(iface.window)
-    with patch("qgis_ai_copilot.widgets.QMessageBox") as message_box, patch(
-        "qgis_ai_copilot.widgets.QDesktopServices"
-    ) as desktop:
+    with (
+        patch("qgis_ai_copilot.widgets.QMessageBox") as message_box,
+        patch("qgis_ai_copilot.widgets.QDesktopServices") as desktop,
+    ):
         message_box.Open = QMessageBox.Open
         message_box.Cancel = QMessageBox.Cancel
         browser._confirm_external_link(QUrl("file:///tmp/private.txt"))
@@ -231,9 +256,11 @@ def main() -> int:
     dock._toggle_model_popover()
     app.processEvents()
     assert settings_dialog.auth_select is not None
+    assert hasattr(settings_dialog, "visual_trust_check")
     assert settings_dialog.context_trust_check.isChecked()
     settings_dialog._connection_identity_changed()
     assert not settings_dialog.context_trust_check.isChecked()
+    assert not settings_dialog.visual_trust_check.isChecked()
     assert context_dialog.preview.toPlainText()
     assert dock.model_popover is not None and dock.model_popover.isVisible()
     popover = dock.model_popover

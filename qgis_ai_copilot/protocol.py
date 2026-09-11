@@ -64,6 +64,7 @@ class ModelRecord:
     owned_by: str = ""
     explicit_thinking: tuple[str, ...] = ()
     supports_images: bool | None = None
+    supports_tools: bool | None = None
 
 
 def normalized_base_url(base_url: str) -> str:
@@ -162,6 +163,7 @@ def parse_model_catalog(payload: bytes | str | dict[str, Any]) -> list[ModelReco
                 owned_by=str(item.get("owned_by") or ""),
                 explicit_thinking=explicit,
                 supports_images=_image_capability(item),
+                supports_tools=_tool_capability(item),
             )
         )
     if not records:
@@ -175,6 +177,20 @@ def _image_capability(item: dict[str, Any]) -> bool | None:
         modalities = item["architecture"].get("input_modalities")
     if isinstance(modalities, list) and modalities and all(isinstance(value, str) for value in modalities):
         return "image" in modalities
+    return None
+
+
+def _tool_capability(item: dict[str, Any]) -> bool | None:
+    for key in ("supports_tools", "supports_function_calling", "tool_calling"):
+        value = item.get(key)
+        if isinstance(value, bool):
+            return value
+    capabilities = item.get("capabilities")
+    if isinstance(capabilities, dict):
+        for key in ("tools", "function_calling", "supports_tools"):
+            value = capabilities.get(key)
+            if isinstance(value, bool):
+                return value
     return None
 
 
@@ -308,7 +324,9 @@ class ResponsesStream:
     Activity updates are full snapshots keyed by item/part for deduplication.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, allow_tools: bool = False) -> None:
+        self.allow_tools = allow_tools
+        self.handoff: dict[str, Any] | None = None
         self.phases: dict[str, str] = {}
         self.indices: dict[str, str] = {}
         self.texts: dict[str, str] = {}
@@ -389,17 +407,85 @@ class ResponsesStream:
             response = event.get("response") or {}
             if not isinstance(response, dict):
                 raise ProtocolError("Malformed completed response.")
-            if response.get("error") or response.get("status") in {"failed", "incomplete"}:
+            if response.get("error") or response.get("status", "completed") != "completed":
                 raise ProtocolError("The provider did not complete this response.")
             output = []
+            items = response.get("output") or []
+            if not isinstance(items,list):
+                raise ProtocolError("Malformed response output.")
+            calls=[item for item in items if isinstance(item,dict) and item.get("type")=="function_call"]
+            if calls:
+                if not self.allow_tools:
+                    raise ProtocolError("Tool calls require Execute mode; no tools were run.")
+                if len(calls)>12 or len(json.dumps(items).encode("utf-8"))>512000:
+                    raise ProtocolError("Tool handoff exceeds execution limits.")
+                seen=set()
+                for call in calls:
+                    cid=call.get("call_id")
+                    if not isinstance(cid,str) or not cid or len(cid)>160 or cid in seen:
+                        raise ProtocolError("Missing or duplicate tool call id.")
+                    seen.add(cid)
+                    if not isinstance(call.get("name"),str) or len(call["name"])>100 or not isinstance(call.get("arguments"),str) or len(call["arguments"].encode("utf-8"))>16000:
+                        raise ProtocolError("Malformed or oversized tool arguments.")
+                safe_calls = []
+                safe_output = []
+                for item in items:
+                    if not isinstance(item, dict):
+                        continue
+                    if item.get("type") == "reasoning":
+                        safe = {
+                            "type": "reasoning",
+                            "summary": [
+                                {"type": "summary_text", "text": part["text"]}
+                                for part in (item.get("summary") or [])
+                                if isinstance(part, dict) and part.get("type") == "summary_text"
+                                and isinstance(part.get("text"), str)
+                            ],
+                        }
+                        if isinstance(item.get("id"), str) and len(item["id"]) <= 160:
+                            safe["id"] = item["id"]
+                        encrypted = item.get("encrypted_content")
+                        if isinstance(encrypted, str) and len(encrypted.encode("utf-8")) <= 256000:
+                            safe["encrypted_content"] = encrypted
+                        if "encrypted_content" in safe:
+                            safe_output.append(safe)
+                    elif item.get("type") == "message":
+                        safe = {"type": "message", "role": "assistant", "content": [
+                            {"type": "output_text", "text": part["text"]}
+                            for part in (item.get("content") or [])
+                            if isinstance(part, dict) and part.get("type") == "output_text"
+                            and isinstance(part.get("text"), str)
+                        ]}
+                        if isinstance(item.get("id"), str):
+                            safe["id"] = item["id"]
+                        if item.get("phase") in {"commentary", "final_answer"}:
+                            safe["phase"] = item["phase"]
+                        if safe["content"]:
+                            safe_output.append(safe)
+                    elif item.get("type") == "function_call":
+                        safe = {
+                            "type": "function_call",
+                            "call_id": item["call_id"],
+                            "name": item["name"],
+                            "arguments": item["arguments"],
+                        }
+                        if isinstance(item.get("id"), str) and len(item["id"]) <= 160:
+                            safe["id"] = item["id"]
+                        safe_calls.append(safe)
+                        safe_output.append(safe)
+                self.handoff={
+                    "calls": safe_calls,
+                    "output": safe_output,
+                    "usage": response.get("usage") if isinstance(response.get("usage"), dict) else {},
+                }
             for index, item in enumerate(response.get("output") or []):
                 if isinstance(item, dict):
                     output.extend(self._item(item, index))
-            if not self.answer:
+            if not self.answer and not self.handoff:
                 raise ProtocolError("Responses completed without a final answer. No tools were executed.")
             self.completed = True
             self.usage = response.get("usage") if isinstance(response.get("usage"), dict) else {}
-            output.append(("completed", self.answer))
+            output.append(("tool_calls", self.handoff) if self.handoff else ("completed", self.answer))
             return output
         return []
 
@@ -524,6 +610,8 @@ def parse_sse_chat_data(data: str) -> tuple[str, Any]:
         raise ProtocolError("Streaming response contains invalid JSON.") from exc
     if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
         raise ProtocolError(str(payload["error"].get("message") or "Router stream failed."))
+    if isinstance(payload, dict) and isinstance(payload.get("usage"), dict):
+        return "usage", payload["usage"]
     choices = payload.get("choices") if isinstance(payload, dict) else None
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         return "noop", None

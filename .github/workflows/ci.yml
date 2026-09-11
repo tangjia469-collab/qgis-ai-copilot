@@ -44,3 +44,4 @@ jobs:
       - name: Install local PDF renderer
         run: apt-get update && apt-get install -y --no-install-recommends poppler-utils
       - run: /usr/bin/python3 scripts/run_qgis_tests.py
+      - run: /usr/bin/python3 scripts/run_execute_tests.py

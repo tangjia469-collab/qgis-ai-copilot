@@ -14,6 +14,16 @@ from qgis_ai_copilot.protocol import build_chat_payload
 
 
 class ScreenshotCompressionTests(unittest.TestCase):
+    def test_retina_capture_keeps_all_physical_pixels_without_transparent_padding(self):
+        image = QImage(800, 600, QImage.Format_ARGB32)
+        image.fill(QColor("#5a8bc0"))
+        image.setDevicePixelRatio(2.0)
+        item = prepare_image(image, "retina-map.png", "map-canvas")
+        result = QImage.fromData(item.preview_bytes)
+        self.assertEqual(result.size(), image.size())
+        self.assertEqual(result.pixelColor(799, 599), QColor("#5a8bc0"))
+        self.assertEqual(image.devicePixelRatio(), 2.0)
+
     def test_flat_4k_screenshot_stays_lossless_and_compact(self):
         image = QImage(4096, 2304, QImage.Format_ARGB32)
         image.fill(QColor("#e8e8e8"))

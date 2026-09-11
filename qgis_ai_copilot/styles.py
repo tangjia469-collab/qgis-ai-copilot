@@ -4,6 +4,8 @@
 
 from qgis.PyQt.QtGui import QColor, QPalette
 
+from .typography import monospace_family, ui_family
+
 
 def _hex(color: QColor) -> str:
     return color.name(QColor.HexRgb)
@@ -34,10 +36,16 @@ def build_stylesheet(palette: QPalette) -> str:
     success = QColor("#65B891" if dark else "#2D7A58")
     warning = QColor("#D7A74A" if dark else "#8A5A00")
     danger = QColor("#E27878" if dark else "#B23B3B")
+    answer_blue = QColor("#ADCFFF" if dark else "#214F80")
+    answer_surface = _mix(base, QColor("#5395ed"), 0.12 if dark else 0.055)
+    answer_border = _mix(base, QColor("#5395ed"), 0.38 if dark else 0.26)
 
     return f"""
+    QWidget#CopilotRoot, QWidget#CopilotRoot QWidget {{
+        font-family: "{ui_family()}";
+    }}
     QWidget#CopilotRoot {{
-        background: {_hex(window)};
+        background: {_hex(base)};
         color: {_hex(text)};
         font-size: 12px;
     }}
@@ -48,7 +56,16 @@ def build_stylesheet(palette: QPalette) -> str:
     }}
     QLabel[kind="brand"] {{ font-size: 13px; font-weight: 650; }}
     QLabel[kind="project"] {{ font-weight: 600; }}
-    QLabel[kind="meta"] {{ color: {_hex(subtle)}; font-size: 10px; }}
+    QLabel[kind="meta"] {{ color: {_hex(subtle)}; font-size: 11px; }}
+    QLabel[kind="work-title"] {{ color: {_hex(text)}; font-size: 13px; font-weight: 600; }}
+    QLabel[kind="work-phase"], QLabel[kind="work-status"] {{ color: {_hex(subtle)}; font-size: 10px; }}
+    QLabel[kind="work-mode"] {{ color: {_hex(subtle)}; font-size: 10px; }}
+    QLabel[kind="work-next"] {{ color: {_hex(subtle)}; font-size: 10px; padding-left: 7px; }}
+    QLabel[kind="work-current"] {{ color: {_hex(answer_blue)}; background: {_hex(answer_surface)}; border-left: 2px solid {_hex(answer_border)}; padding: 5px 7px; }}
+    QLabel[kind="work-step"] {{ color: {_hex(text)}; font-size: 11px; }}
+    QLabel[kind="work-state"] {{ color: {_hex(subtle)}; font-size: 10px; }}
+    QLabel[kind="work-complete"] {{ color: {_hex(success)}; font-size: 13px; font-weight: 650; }}
+    QLabel[kind="work-active"] {{ color: {_hex(highlight)}; font-size: 13px; font-weight: 650; }}
     QLabel[kind="user-meta"] {{ color: {_hex(subtle)}; font-size: 10px; }}
     QPlainTextEdit[kind="activity"] {{ color: {_hex(subtle)}; font-size: 10px; padding: 1px 3px; background: transparent; }}
     QLabel[kind="muted"] {{ color: {_hex(muted)}; }}
@@ -68,14 +85,32 @@ def build_stylesheet(palette: QPalette) -> str:
         color: {_hex(text)};
         background: {_hex(surface_2)};
     }}
-    QToolButton[kind="profile"] {{
+    QToolButton[kind="model-selector"] {{
         min-height: 30px;
         max-height: 30px;
-        border-color: {_hex(border)};
+        border: 1px solid transparent;
+        padding: 0 3px;
+        color: {_hex(subtle)};
+        background: transparent;
+        font-size: 11px;
+        font-weight: 400;
+    }}
+    QToolButton[kind="model-selector"]:hover,
+    QToolButton[kind="model-selector"]:focus {{
         color: {_hex(text)};
         background: {_hex(surface)};
-        font-size: 10px;
-        font-weight: 550;
+    }}
+    QToolButton[kind="model-selector"]:focus {{ border-color: {_hex(strong_border)}; }}
+    QToolButton#ComposerAttach, QToolButton#ComposerAreaCapture {{
+        padding: 0;
+        border: 1px solid transparent;
+        background: transparent;
+    }}
+    QToolButton#ComposerAttach::menu-indicator {{ image: none; width: 0; height: 0; }}
+    QToolButton#ComposerAttach:hover, QToolButton#ComposerAttach:focus,
+    QToolButton#ComposerAreaCapture:hover, QToolButton#ComposerAreaCapture:focus {{
+        background: {_hex(surface)};
+        border-color: {_hex(border)};
     }}
     QToolButton[kind="message-action"] {{
         min-width: 20px;
@@ -85,11 +120,21 @@ def build_stylesheet(palette: QPalette) -> str:
         padding: 0;
         border-radius: 4px;
     }}
+    QToolButton[kind="mode"] {{ min-height: 24px; padding: 0 3px; font-size: 10px; }}
+    QToolButton[kind="mode"]:checked {{ background: {_hex(surface_2)}; border-color: {_hex(strong_border)}; color: {_hex(text)}; }}
     QToolButton[kind="question-toggle"] {{
         min-height: 18px;
         padding: 0 3px;
         font-size: 10px;
     }}
+    QToolButton[kind="disclosure"] {{
+        min-height: 24px;
+        padding: 1px 2px;
+        font-size: 12px;
+        text-align: left;
+    }}
+    QToolButton[kind="work-stop"] {{ min-height: 24px; padding: 0 7px; border-color: {_hex(border)}; color: {_hex(subtle)}; background: transparent; }}
+    QToolButton[kind="work-stop"]:hover, QToolButton[kind="work-stop"]:focus {{ border-color: {_hex(strong_border)}; color: {_hex(text)}; background: {_hex(surface)}; }}
     QToolButton[kind="context-toggle"] {{
         min-height: 30px;
         padding: 0 5px;
@@ -107,9 +152,9 @@ def build_stylesheet(palette: QPalette) -> str:
         max-width: 32px;
         max-height: 32px;
         padding: 0;
-        border-color: {_hex(highlight)};
-        color: {_hex(highlighted_text)};
-        background: {_hex(highlight)};
+        border-color: #0879e9;
+        color: white;
+        background: #0879e9;
     }}
     QToolButton[kind="danger"] {{
         min-width: 32px;
@@ -120,6 +165,16 @@ def build_stylesheet(palette: QPalette) -> str:
         border-color: {_hex(danger)};
         color: white;
         background: {_hex(danger)};
+    }}
+    QToolButton[kind="primary"]:hover {{ background: #006bd6; border-color: #006bd6; }}
+    QToolButton[kind="primary"]:focus {{ border-color: #004f9e; }}
+    QToolButton[kind="primary"]:disabled {{
+        border-color: {"#30465e" if dark else "#e1e9f2"};
+        background: {"#30465e" if dark else "#e1e9f2"};
+    }}
+    QToolButton[kind="danger"]:hover, QToolButton[kind="danger"]:focus {{
+        border-color: {_hex(_mix(danger, text, 0.2))};
+        background: {_hex(_mix(danger, text, 0.08))};
     }}
     QToolButton[kind="chip"] {{
         min-height: 23px;
@@ -170,14 +225,27 @@ def build_stylesheet(palette: QPalette) -> str:
         background: {_hex(surface)};
     }}
     QFrame[role="assistant"] {{
-        border: 1px solid {_hex(highlight)};
+        border: 1px solid {_hex(answer_border)};
         border-radius: 8px;
-        background: {_hex(_mix(window, highlight, 0.10 if dark else 0.07))};
+        background: {_hex(answer_surface)};
     }}
     QFrame[role="activity"] {{
         border: 0;
-        border-left: 2px solid {_hex(border)};
-        background: {_hex(surface)};
+        background: transparent;
+    }}
+    QFrame#ExpressionCodeBox {{
+        border: 1px solid {_hex(border)};
+        border-radius: 6px;
+        background: {_hex(base)};
+    }}
+    QPlainTextEdit[kind="code"], QWidget#CopilotRoot QPlainTextEdit[kind="code"] {{
+        padding: 0;
+        border: 0;
+        border-radius: 0;
+        background: transparent;
+        color: {_hex(answer_blue)};
+        font-size: 13px;
+        font-family: "{monospace_family()}";
     }}
     QFrame[role="tool"] {{
         border: 1px solid {_hex(border)};
@@ -197,11 +265,15 @@ def build_stylesheet(palette: QPalette) -> str:
         color: {_hex(text)};
         background: transparent;
     }}
+    QFrame[role="assistant"] QTextBrowser[kind="message"],
+    QFrame[role="assistant"] QToolButton[kind="disclosure"] {{
+        color: {_hex(answer_blue)};
+    }}
     QFrame#Composer {{
         margin: 8px 10px;
         border: 1px solid {_hex(strong_border)};
         border-radius: 7px;
-        background: {_hex(surface)};
+        background: {_hex(base)};
     }}
     QTextEdit#MessageInput {{
         padding: 7px 8px;

@@ -56,6 +56,7 @@ class RouterClient(QObject):
     chatFailed = pyqtSignal(str, str, int, str)
     chatProgress = pyqtSignal(str, int, int)
     chatActivity = pyqtSignal(object)
+    chatToolsReady = pyqtSignal(object)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
@@ -87,6 +88,7 @@ class RouterClient(QObject):
         self._chat_raw = bytearray()
         self._chat_decoder = SseDecoder()
         self._chat_partial = ""
+        self._chat_usage: dict[str, Any] = {}
         self._chat_done = False
         self._chat_cancel_requested = False
         self._chat_forced_error: tuple[str, str] | None = None
@@ -189,7 +191,7 @@ class RouterClient(QObject):
             reply.abort()
             reply.deleteLater()
 
-    def send_chat(self, profile: RouterProfile, payload: dict[str, Any], adapter: str | None = None) -> None:
+    def send_chat(self, profile: RouterProfile, payload: dict[str, Any], adapter: str | None = None, allow_tools: bool = False) -> None:
         self.abort_chat(silent=True)
         try:
             self._chat_adapter = adapter or profile.adapter
@@ -211,9 +213,10 @@ class RouterClient(QObject):
         self._chat_streaming = bool(payload.get("stream"))
         self._chat_raw = bytearray()
         self._chat_decoder = SseDecoder()
-        self._responses_stream = ResponsesStream()
+        self._responses_stream = ResponsesStream(allow_tools=allow_tools)
         self._model_activity_seen = False
         self._chat_partial = ""
+        self._chat_usage = {}
         self._chat_done = False
         self._chat_cancel_requested = False
         self._chat_forced_error = None
@@ -314,12 +317,14 @@ class RouterClient(QObject):
                         elif kind == "delta":
                             self._phase = "receiving"
                             self.chatDelta.emit(value)
-                        elif kind == "completed":
+                        elif kind in {"completed", "tool_calls"}:
                             self._chat_done = True
                     continue
                 kind, value = parse_sse_chat_data(data)
                 if kind == "done":
                     self._chat_done = True
+                elif kind == "usage":
+                    self._chat_usage = value
                 elif kind == "delta":
                     self._phase = "receiving"
                     self._chat_partial += value
@@ -400,11 +405,13 @@ class RouterClient(QObject):
                     status,
                     self._chat_partial,
                 )
+            elif self._chat_adapter=="responses" and self._responses_stream.handoff:
+                self.chatToolsReady.emit(self._responses_stream.handoff)
             elif not self._chat_partial:
                 self.chatFailed.emit("protocol", "The streaming response was empty.", status, "")
             else:
                 self._activity_unavailable_notice()
-                usage = self._responses_stream.usage if self._chat_adapter == "responses" else {}
+                usage = self._responses_stream.usage if self._chat_adapter == "responses" else self._chat_usage
                 self.chatCompleted.emit(self._chat_partial, False, usage)
         else:
             try:
@@ -421,7 +428,10 @@ class RouterClient(QObject):
                 self.chatFailed.emit("protocol", str(exc), status, self._chat_partial)
             else:
                 self._activity_unavailable_notice()
-                self.chatCompleted.emit(content, True, usage)
+                if self._chat_adapter=="responses" and self._responses_stream.handoff:
+                    self.chatToolsReady.emit(self._responses_stream.handoff)
+                else:
+                    self.chatCompleted.emit(content, True, usage)
         reply.deleteLater()
 
     def abort_chat(self, silent: bool = False) -> None:

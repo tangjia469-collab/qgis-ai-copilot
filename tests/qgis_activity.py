@@ -44,7 +44,7 @@ class ActivityHandler(BaseHTTPRequestHandler):
             {"id":"note", "type":"message", "phase":"commentary", "content":[{"type":"output_text","text":"I will inspect coordinate units."}]},
             {"id":"r", "type":"reasoning", "encrypted_content":"PRIVATE_ENCRYPTED", "summary":[{"type":"summary_text","text":"Checking CRS compatibility"}]},
             {"id":"answer", "type":"message", "phase":"final_answer", "content":[{"type":"output_text","text":"Use a metric CRS."}]},
-        ]}
+        ], "usage": {"input_tokens": 42, "output_tokens": 18, "total_tokens": 60}}
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream" if payload.get("stream") else "application/json")
         self.end_headers()
@@ -109,6 +109,33 @@ class ActivityTests(unittest.TestCase):
         self.assertTrue(any(item["kind"]=="summary" for item in updates))
         self.assertTrue(any(item["kind"]=="commentary" for item in updates))
         self.assertNotIn("PRIVATE_",str(updates))
+
+    def test_assistant_footer_shows_official_cost_instead_of_tokens(self):
+        message = {
+            "role": "assistant",
+            "status": "complete",
+            "content": "Answer",
+            "created_at": "2026-09-07T00:00:00+00:00",
+            "finished_at": "2026-09-07T00:01:05+00:00",
+            "duration_seconds": 65,
+            "usage": {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120, "cached_tokens": 0, "cache_write_tokens": 0},
+            "request": {"model": "gpt-6-astra", "thinking": "High"},
+        }
+        card = MessageCard(message)
+        card.resize(420, 120)
+        card.show()
+        self.app.processEvents()
+        self.assertIn("1m 05s", card.footer_meta.toolTip())
+        self.assertIn("Standard", card.footer_meta.toolTip())
+        self.assertIn("1m 05s", card.footer_meta.text())
+        self.assertIsNotNone(getattr(card, "footer_cost", None), "Cost needs its own non-eliding footer label")
+        self.assertIn("Est. $0.0020", card.footer_cost.text())
+        card.resize(360, 120)
+        self.app.processEvents()
+        self.assertGreaterEqual(card.footer_cost.width(), card.footer_cost.sizeHint().width())
+        self.assertLessEqual(card.footer_cost.geometry().right(), card.footer.width())
+        self.assertNotIn("tokens", card.footer_meta.text())
+        card.deleteLater()
 
     def test_nonstreaming_keeps_activity_separate(self):
         self.assertTrue(hasattr(self.client,"chatActivity"),"No model activity signal")
@@ -211,26 +238,35 @@ class ActivityTests(unittest.TestCase):
         dock._refresh_model_control()
         dock.message_input.setPlainText("Inspect this synthetic context")
         with patch("qgis_ai_copilot.dock.QMessageBox.question",return_value=QMessageBox.Yes):
-            wait_for(dock.client.chatCompleted,dock._send_or_stop)
+            wait_for(dock.responseCompleted,dock._send_or_stop)
         answer=dock.conversation["messages"][-1]
         self.assertEqual(answer["content"],"Use a metric CRS.")
         self.assertEqual(answer["request"]["adapter"],"responses")
         self.assertTrue(answer["request"]["reasoning_summaries"])
         self.assertTrue(any(item["kind"]=="summary" for item in answer["activity"]))
+        self.assertGreaterEqual(answer["duration_seconds"], 0)
+        self.assertEqual(answer["usage"]["total_tokens"], 60)
+        answer_card = next(
+            card
+            for card in dock.conversation_body.findChildren(MessageCard)
+            if card.message.get("id") == answer.get("id")
+        )
+        self.assertNotIn("tokens", answer_card.footer_meta.text())
+        self.assertEqual(answer["cost_estimate"]["status"], "unavailable")
         saved=dock.store.load_conversation(dock.project_id,dock.conversation["id"])
         self.assertNotIn("PRIVATE_",json.dumps(saved))
         latest_user = next(item for item in reversed(dock.conversation["messages"]) if item.get("role") == "user")
         dock._begin_edit_question(latest_user)
         dock.message_input.setPlainText("Rewrite the synthetic GIS question")
         with patch("qgis_ai_copilot.dock.QMessageBox.question",return_value=QMessageBox.Yes):
-            wait_for(dock.client.chatCompleted,dock._send_or_stop)
+            wait_for(dock.responseCompleted,dock._send_or_stop)
         user_messages = [item["content"] for item in dock.conversation["messages"] if item.get("role") == "user"]
         self.assertEqual(user_messages, ["Rewrite the synthetic GIS question"])
         self.assertEqual(len(dock.conversation["messages"]), 2)
         self.assertIsNone(dock._editing_message_id)
         answer = dock.conversation["messages"][-1]
         dock.profile=replace(self.profile,adapter="chat_completions",reasoning_summaries=False)
-        wait_for(dock.client.chatCompleted,lambda:dock._retry_message(answer,False))
+        wait_for(dock.responseCompleted,lambda:dock._retry_message(answer,False))
         self.assertEqual(ActivityHandler.calls[-1][0],"/v1/responses")
         self.assertEqual(ActivityHandler.calls[-1][1]["reasoning"]["summary"],"auto")
         plugin.unload()

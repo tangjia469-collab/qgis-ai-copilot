@@ -81,7 +81,7 @@ class MessageEditTests(unittest.TestCase):
         d._persist_conversation()
         d._render_conversation()
         self.before = deepcopy(d.conversation)
-        self.send = patch.object(d.client, "send_chat").start()
+        self.send = patch("qgis_ai_copilot.network.RouterClient.send_chat").start()
         self.warn = patch("qgis_ai_copilot.dock.QMessageBox.warning").start()
         self.confirm = patch(
             "qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Yes
@@ -147,6 +147,7 @@ class MessageEditTests(unittest.TestCase):
         self.assertFalse(self.send.called)
 
     def test_send_confirmation_cancel_keeps_old_history_and_edit_draft(self):
+        self.dock.settings.save_automatic_read_access(False)
         self.confirm.return_value = QMessageBox.Cancel
         self.begin()
         self.dock._send_or_stop()
@@ -239,6 +240,7 @@ class MessageEditTests(unittest.TestCase):
         self.assertFalse(self.dock._edit_missing_attachments)
 
     def test_profile_change_during_consent_prevents_commit(self):
+        self.dock.settings.save_automatic_read_access(False)
         self.begin()
 
         def change_profile(*_args):

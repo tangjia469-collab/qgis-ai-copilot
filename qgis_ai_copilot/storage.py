@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .constants import DEFAULT_HISTORY_RETENTION_DAYS, SCHEMA_VERSION
+from .pricing import MAX_COST_ROUNDS, sanitize_cost_estimate
 
 
 _PERSISTED_REQUEST_KEYS = {
@@ -29,6 +30,8 @@ _PERSISTED_REQUEST_KEYS = {
     "user_message_id",
     "adapter",
     "reasoning_summaries",
+    "execute",
+    "inspect",
 }
 _ATTACHMENT_MANIFEST_KEYS = {
     "id",
@@ -55,6 +58,16 @@ _SENSITIVE_CONTEXT_KEYS = {
     "token",
     "uri",
 }
+_USAGE_KEYS = {
+    "input_tokens",
+    "output_tokens",
+    "total_tokens",
+    "prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "cached_tokens",
+    "cache_write_tokens",
+}
 
 
 def utc_now() -> str:
@@ -62,6 +75,11 @@ def utc_now() -> str:
 
 
 def _redact_context_text(value: str) -> str:
+    value = re.sub(
+        r"(?i)([a-z][a-z0-9+.-]*://)[^/@\s:]+:[^/@\s]+@",
+        r"\1[redacted]@",
+        value,
+    )
     value = re.sub(r"(?i)data:(?:image|application)/[^\s,]+,[A-Za-z0-9+/=]*", "[attachment data redacted]", value)
     value = re.sub(r"[A-Za-z0-9+/]{160,}={0,2}", "[encoded data redacted]", value)
     value = re.sub(r"(?i)bearer\s+[^\s,;]+", "Bearer [redacted]", value)
@@ -95,6 +113,32 @@ def _sanitize_context_value(value: Any) -> Any:
     if isinstance(value, str):
         return _redact_context_text(value)
     return value
+
+
+def _sanitize_usage(value: Any) -> dict[str, int]:
+    """Keep only bounded numeric token counters from a provider response."""
+
+    if not isinstance(value, dict):
+        return {}
+    safe: dict[str, int] = {}
+    for key in _USAGE_KEYS:
+        raw = value.get(key)
+        if isinstance(raw, bool):
+            continue
+        if not isinstance(raw, (int, str)) or (isinstance(raw, str) and not re.fullmatch(r"[0-9]{1,10}", raw)):
+            continue
+        number = int(raw)
+        if 0 <= number <= 2_000_000_000:
+            safe[key] = number
+    for details_key in ("input_tokens_details", "prompt_tokens_details"):
+        details = value.get(details_key)
+        if not isinstance(details, dict):
+            continue
+        for key in ("cached_tokens", "cache_write_tokens"):
+            raw = details.get(key)
+            if type(raw) is int and 0 <= raw <= 2_000_000_000:
+                safe[key] = raw
+    return safe
 
 
 def _sanitize_attachment_manifests(value: Any) -> list[dict[str, Any]]:
@@ -185,6 +229,23 @@ def sanitized_conversation(conversation: dict[str, Any]) -> dict[str, Any]:
             message["tool_result"] = tool_result
         if isinstance(message.get("error"), dict):
             message["error"] = _sanitize_context_value(message["error"])
+        if "usage" in message:
+            message["usage"] = _sanitize_usage(message["usage"])
+        if "usage_rounds" in message:
+            rounds = message["usage_rounds"]
+            message["usage_rounds"] = [_sanitize_usage(item) for item in rounds] if isinstance(rounds, list) and len(rounds) <= MAX_COST_ROUNDS else []
+        if "cost_estimate" in message:
+            message["cost_estimate"] = sanitize_cost_estimate(message["cost_estimate"])
+        if "duration_seconds" in message:
+            try:
+                duration = int(message["duration_seconds"])
+            except (TypeError, ValueError):
+                message.pop("duration_seconds", None)
+            else:
+                message["duration_seconds"] = max(0, min(duration, 86_400))
+        for key in ("started_at", "finished_at"):
+            if key in message:
+                message[key] = str(message[key])[:64]
     return value
 
 

@@ -146,6 +146,20 @@ class ProtocolTests(unittest.TestCase):
         self.assertIs(models[1].supports_images, False)
         self.assertIs(models[2].supports_images, True)
 
+    def test_model_tool_capability_is_read_when_catalog_advertises_it(self):
+        models = parse_model_catalog(
+            {
+                "data": [
+                    {"id": "unknown"},
+                    {"id": "blocked", "supports_tools": False},
+                    {"id": "enabled", "capabilities": {"function_calling": True}},
+                ]
+            }
+        )
+        self.assertIsNone(models[0].supports_tools)
+        self.assertFalse(models[1].supports_tools)
+        self.assertTrue(models[2].supports_tools)
+
     def test_history_keeps_current_visual_message_and_bounds_images(self):
         visual = {"role": "user", "content": [{"type": "text", "text": "inspect"}, {"type": "image_url", "image_url": {"url": ONE_PIXEL_PNG_URL}}]}
         history = bounded_chat_history([visual] * 22, max_messages=25)
@@ -173,6 +187,10 @@ class ProtocolTests(unittest.TestCase):
         )
         self.assertEqual(content, "Answer")
         self.assertEqual(usage["total_tokens"], 10)
+
+    def test_stream_usage_event_is_preserved_for_message_metrics(self):
+        usage = {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+        self.assertEqual(parse_sse_chat_data(json.dumps({"choices": [], "usage": usage})), ("usage", usage))
 
     def test_sse_decoder_handles_split_utf8_and_events(self):
         first = 'data: {"choices":[{"delta":{"content":"Caf'.encode("utf-8")

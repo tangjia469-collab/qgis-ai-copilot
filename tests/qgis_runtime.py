@@ -11,7 +11,7 @@ from qgis.core import (
 
 def configure_prefix():
     prefix = os.environ.get("QGIS_PREFIX_PATH")
-    mac_bundle = Path("/Applications/QGIS.app/Contents/Resources/qgis")
+    mac_bundle = Path("/Applications/QGIS.app")
     if prefix:
         QgsApplication.setPrefixPath(prefix, True)
     elif mac_bundle.exists():

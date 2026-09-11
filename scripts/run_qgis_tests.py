@@ -13,6 +13,11 @@ SUITES = (
     "qgis_request_progress",
     "qgis_activity",
     "qgis_message_edit",
+    "qgis_typography",
+    "qgis_code_blocks",
+    "qgis_response_selection",
+    "qgis_work_plan",
+    "qgis_area_capture",
 )
 
 if __name__ == "__main__":

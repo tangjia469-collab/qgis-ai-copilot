@@ -2,12 +2,25 @@
 # Copyright (C) 2026 QGIS AI Copilot contributors
 """QGIS plugin lifecycle."""
 
+from pathlib import Path
+
 from qgis.PyQt.QtCore import Qt
+from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QStyle
 from qgis.core import QgsApplication
 
 from .constants import PLUGIN_NAME
 from .dock import CopilotDock
+
+
+def _assist_icon(iface) -> QIcon:
+    icon = QIcon(str(Path(__file__).with_name("icon.svg")))
+    if not icon.isNull():
+        return icon
+    icon = QgsApplication.getThemeIcon("/mActionChat.svg")
+    if not icon.isNull():
+        return icon
+    return iface.mainWindow().style().standardIcon(QStyle.SP_MessageBoxInformation)
 
 
 class QgisAiCopilotPlugin:
@@ -17,12 +30,13 @@ class QgisAiCopilotPlugin:
         self.dock: CopilotDock | None = None
 
     def initGui(self) -> None:  # noqa: N802 - QGIS plugin API name
-        icon = QgsApplication.getThemeIcon("/mActionChat.svg")
-        if icon.isNull():
-            icon = self.iface.mainWindow().style().standardIcon(QStyle.SP_MessageBoxInformation)
-        self.action = QAction(icon, PLUGIN_NAME, self.iface.mainWindow())
+        self.action = QAction(_assist_icon(self.iface), "Assist", self.iface.mainWindow())
+        self.action.setObjectName("QgisAiCopilotAssistAction")
+        self.action.setIconText("Assist")
+        self.action.setIconVisibleInMenu(True)
         self.action.setCheckable(True)
-        self.action.setToolTip("Show QGIS AI Copilot")
+        self.action.setToolTip("Open Assist")
+        self.action.setStatusTip("Open or hide the QGIS AI Copilot assistant panel")
         self.action.triggered.connect(self._set_visible)
         self.iface.addPluginToMenu(f"&{PLUGIN_NAME}", self.action)
         self.iface.addToolBarIcon(self.action)

@@ -33,9 +33,7 @@ def wait_preparation(dock):
     loop = QEventLoop()
     timer = QTimer()
     timer.setInterval(20)
-    timer.timeout.connect(
-        lambda: loop.quit() if dock._attachment_task is None else None
-    )
+    timer.timeout.connect(lambda: loop.quit() if dock._attachment_task is None else None)
     timer.start()
     QTimer.singleShot(15000, loop.quit)
     loop.exec_()
@@ -105,9 +103,7 @@ def main():
         assert pdf.image_count == 2
         assert len(pdf.parts) == 4
         assert "page 3 of 3" in pdf.parts[2]["text"]
-        assert not list(
-            Path(tempfile.gettempdir()).glob("qgis-ai-copilot-pdf-*/input.pdf")
-        )
+        assert not list(Path(tempfile.gettempdir()).glob("qgis-ai-copilot-pdf-*/input.pdf"))
         with patch(
             "qgis_ai_copilot.attachments._pdf_tool",
             side_effect=AttachmentError("PDF helper unavailable"),
@@ -118,9 +114,7 @@ def main():
             except AttachmentError:
                 pass
 
-        with patch(
-            "qgis_ai_copilot.dock.QFileDialog.getOpenFileNames", return_value=([], "")
-        ):
+        with patch("qgis_ai_copilot.dock.QFileDialog.getOpenFileNames", return_value=([], "")):
             dock._open_attachment_dialog()
         assert not dock.attachments
         with patch(
@@ -151,6 +145,14 @@ def main():
         dock._clear_attachment_payloads()
         dock._capture_qgis_window_now()
         assert next(iter(dock.attachments.values())).source_kind == "qgis-window"
+        dock._clear_attachment_payloads()
+        dock._capture_map_canvas_now()
+        map_capture = next(iter(dock.attachments.values()))
+        assert map_capture.source_kind == "map-canvas"
+        captured_image = QImage.fromData(map_capture.preview_bytes)
+        canvas = dock.iface.mapCanvas()
+        assert captured_image.width() == round(canvas.width() * canvas.devicePixelRatioF())
+        assert captured_image.height() == round(canvas.height() * canvas.devicePixelRatioF())
         dock._clear_attachment_payloads()
 
         dock._add_attachment(attachment)
@@ -206,60 +208,36 @@ def main():
             assert not dock.conversation["messages"] and len(dock.attachments) == 2
             assert dock.message_input.toPlainText()
             question.assert_called_once()
-        with patch(
-            "qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Yes
-        ):
+        with patch("qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Yes):
             wait_for(dock.client.chatCompleted, dock._send_or_stop)
         assert dock._active_message is None and not dock.attachments
         sent = FixtureHandler.last_payload
-        assert (
-            len(
-                [p for p in sent["messages"][-1]["content"] if p["type"] == "image_url"]
-            )
-            == 3
-        )
+        assert len([p for p in sent["messages"][-1]["content"] if p["type"] == "image_url"]) == 3
         assert str(image_path) not in json.dumps(sent)
         assert "/Users/private" not in json.dumps(sent)
-        stored = json.dumps(
-            dock.store.load_conversation(dock.project_id, dock.conversation["id"])
-        )
+        stored = json.dumps(dock.store.load_conversation(dock.project_id, dock.conversation["id"]))
         assert (
-            "data:image" not in stored
-            and "base64" not in stored
-            and str(image_path) not in stored
+            "data:image" not in stored and "base64" not in stored and str(image_path) not in stored
         )
         assert '"pages": [1, 3]' in stored
 
-        with patch(
-            "qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Cancel
-        ) as question:
+        with patch("qgis_ai_copilot.dock.QMessageBox.question") as question:
             dock.message_input.setPlainText("Which PDF pages did I share?")
-            before = len(dock.conversation["messages"])
-            dock._send_or_stop()
-            assert len(dock.conversation["messages"]) == before
-            assert "pages.pdf" in question.call_args.args[2]
-        with patch(
-            "qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Yes
-        ):
             wait_for(dock.client.chatCompleted, dock._send_or_stop)
-        assert any(
-            isinstance(m["content"], list)
-            for m in FixtureHandler.last_payload["messages"]
-        )
+            assert question.call_count == 0, (
+                "Previously approved attachments should not re-open consent"
+            )
+        assert any(isinstance(m["content"], list) for m in FixtureHandler.last_payload["messages"])
 
         original = dock.conversation["messages"][1]
-        saved_request = dock.store.load_conversation(dock.project_id, dock.conversation["id"])["messages"][1]["request"]
+        saved_request = dock.store.load_conversation(dock.project_id, dock.conversation["id"])[
+            "messages"
+        ][1]["request"]
         assert saved_request["router_id"] == dock._router_identity()
         dock._validate_request_router(saved_request)
-        with patch(
-            "qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Yes
-        ):
-            wait_for(
-                dock.client.chatCompleted, lambda: dock._retry_message(original, False)
-            )
-        assert FixtureHandler.last_payload == sent, (
-            "Retry changed the original multimodal payload"
-        )
+        with patch("qgis_ai_copilot.dock.QMessageBox.question", return_value=QMessageBox.Yes):
+            wait_for(dock.client.chatCompleted, lambda: dock._retry_message(original, False))
+        assert FixtureHandler.last_payload == sent, "Retry changed the original multimodal payload"
 
         dock.records = [ModelRecord("fixture-model", supports_images=False)]
         with patch("qgis_ai_copilot.dock.QMessageBox.warning") as warning:
@@ -280,7 +258,9 @@ def main():
                 dock.width(),
                 dock.minimumSizeHint().width(),
             )
-            assert dock.width() - width <= 24, "Unexpected content growth beyond floating-window chrome"
+            assert dock.width() - width <= 24, (
+                "Unexpected content growth beyond floating-window chrome"
+            )
             for child in [dock.send_button, dock.attach_button, dock.model_button]:
                 pos = child.mapTo(dock.root, child.rect().topLeft())
                 assert pos.x() >= 0 and pos.x() + child.width() <= dock.root.width()
@@ -304,7 +284,14 @@ def main():
             raise AssertionError("Persisted retry lost router binding")
         except ProtocolError:
             pass
-        dock.conversation["messages"].append({"id": "new-router", "role": "user", "content": "Hello", "router_id": dock._router_identity()})
+        dock.conversation["messages"].append(
+            {
+                "id": "new-router",
+                "role": "user",
+                "content": "Hello",
+                "router_id": dock._router_identity(),
+            }
+        )
         new_payload = dock._canonical_messages({"context": {}, "user_message_id": "new-router"})
         assert "pages.pdf" not in json.dumps(new_payload)
         assert image_path.name not in json.dumps(new_payload)

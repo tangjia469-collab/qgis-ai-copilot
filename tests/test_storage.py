@@ -96,6 +96,30 @@ class ConversationStoreTests(unittest.TestCase):
         self.assertNotIn("secret-value", encoded)
         self.assertIn("[redacted]", encoded)
 
+    def test_usage_and_duration_are_bounded_numeric_message_metadata(self):
+        conversation = self.store.create_conversation("project-usage", "Usage")
+        conversation["messages"].append(
+            {
+                "role": "assistant",
+                "content": "Answer",
+                "duration_seconds": "65",
+                "started_at": "2026-09-07T00:00:00+00:00",
+                "finished_at": "2026-09-07T00:01:05+00:00",
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                    "total_tokens": 120,
+                    "private_counter": 999,
+                    "cached_tokens": -1,
+                },
+            }
+        )
+        self.store.save_conversation("project-usage", conversation)
+        saved = self.store.load_conversation("project-usage", conversation["id"])
+        message = saved["messages"][0]
+        self.assertEqual(message["duration_seconds"], 65)
+        self.assertEqual(message["usage"], {"input_tokens": 100, "output_tokens": 20, "total_tokens": 120})
+
     def test_attachment_persistence_keeps_manifest_but_drops_binary_and_path(self):
         conversation = self.store.create_conversation("project-attachments", "Attachments")
         conversation["messages"].append(

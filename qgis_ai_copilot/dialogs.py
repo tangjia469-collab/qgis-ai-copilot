@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 from typing import Any
+from dataclasses import replace
 
 from qgis.PyQt.QtCore import QEvent, QPoint, QRect, Qt, pyqtSignal
 from qgis.PyQt.QtWidgets import (
@@ -33,12 +34,51 @@ from qgis.PyQt.QtWidgets import (
     QWidget,
 )
 from qgis.gui import QgsAuthConfigSelect
-
+from .everos import EverosClient
+from .everos_protocol import EverosConfig, MAX_NOTE, note_request
 from .config import PluginSettings
 from .constants import THINKING_VALUES
 from .context import CONTEXT_LABELS, ContextCollector
 from .network import RouterClient
 from .protocol import ModelRecord, ProtocolError, RouterProfile, normalized_base_url
+
+
+class RememberDialog(QDialog):
+    """The user explicitly chooses the exact note; model output never auto-saves."""
+    def __init__(self, config, initial="", parent=None):
+        super().__init__(parent)
+        self.config = config
+        self.setWindowTitle("Remember in EverOS")
+        layout = QVBoxLayout(self)
+        label = QLabel(f"Save only the note below to {config.user_id} · {config.app_id}/{config.project_id}. Chat history, layer data and attachments are not added automatically. EverOS may use its own extraction provider to process this note.",self)
+        label.setWordWrap(True)
+        label.setTextFormat(Qt.PlainText)
+        layout.addWidget(label)
+        self.note_edit = QPlainTextEdit(self)
+        self.note_edit.setPlainText(initial)
+        self.note_edit.setPlaceholderText("For example: In the Copenhagen project, calculate green area in square metres.")
+        layout.addWidget(self.note_edit)
+        self.note_status = QLabel(f"Up to {MAX_NOTE:,} characters. Include a project/topic name when useful.",self)
+        self.note_status.setWordWrap(True)
+        self.note_status.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.note_status)
+        self.buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel,self)
+        self.buttons.accepted.connect(self._save_note)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self.resize(440,300)
+
+    def note(self):
+        return self.note_edit.toPlainText().strip()
+
+    def _save_note(self):
+        try:
+            note_request(self.config,"validation-only",self.note(),1)
+        except ValueError as exc:
+            self.note_status.setText(str(exc))
+            return
+        self.accept()
+
 
 
 class RouterSettingsDialog(QDialog):
@@ -88,13 +128,27 @@ class RouterSettingsDialog(QDialog):
         form.addRow("Base URL", self.base_url_edit)
         self.auth_select = QgsAuthConfigSelect(connection)
         form.addRow("Authentication", self.auth_select)
+        self.automatic_read_check = QCheckBox("Allow read-only access to all loaded layers", connection)
+        self.automatic_read_check.setToolTip(
+            "Enabled by default. The agent can read and send loaded layer metadata, records, joins and geometry to your configured router without per-read confirmations. "
+            "No project changes are allowed by this setting. Turn it off to require data-sharing review. Screenshots/files keep separate consent."
+        )
+        form.addRow("Read access", self.automatic_read_check)
         self.context_trust_check = QCheckBox(
             "Automatically send selected QGIS metadata", connection
         )
         self.context_trust_check.setToolTip(
-            "Applies only to this Base URL and Authentication selection."
+            "Applies only to this Base URL and Authentication selection when automatic read access is off."
         )
+        self.automatic_read_check.toggled.connect(lambda enabled: self.context_trust_check.setEnabled(not enabled))
         form.addRow("Context", self.context_trust_check)
+        self.visual_trust_check = QCheckBox(
+            "Remember approval for image/PDF attachments", connection
+        )
+        self.visual_trust_check.setToolTip(
+            "After one approved visual send, reuse that approval for this Base URL and Authentication. Clear it here to ask again."
+        )
+        form.addRow("Attachments", self.visual_trust_check)
         self.streaming_check = QCheckBox("Stream responses", connection)
         form.addRow("Delivery", self.streaming_check)
         self.adapter_combo = QComboBox(connection)
@@ -102,9 +156,13 @@ class RouterSettingsDialog(QDialog):
         self.adapter_combo.addItem("Responses (live model activity)", "responses")
         form.addRow("API", self.adapter_combo)
         self.summary_check = QCheckBox("Request model activity summaries", connection)
-        self.summary_check.setToolTip("Only public summaries supplied by the model are shown. Requires Responses support; availability and timing vary by router/model. No raw reasoning is displayed.")
+        self.summary_check.setToolTip(
+            "Only public summaries supplied by the model are shown. Requires Responses support; availability and timing vary by router/model. No raw reasoning is displayed."
+        )
         form.addRow("Activity", self.summary_check)
-        self.adapter_combo.currentIndexChanged.connect(lambda: self.summary_check.setEnabled(self.adapter_combo.currentData() == "responses"))
+        self.adapter_combo.currentIndexChanged.connect(
+            lambda: self.summary_check.setEnabled(self.adapter_combo.currentData() == "responses")
+        )
         self.timeout_spin = QSpinBox(connection)
         self.timeout_spin.setRange(10, 600)
         self.timeout_spin.setSuffix(" s")
@@ -112,7 +170,9 @@ class RouterSettingsDialog(QDialog):
         self.chat_idle_spin = QSpinBox(connection)
         self.chat_idle_spin.setRange(30, 3600)
         self.chat_idle_spin.setSuffix(" s")
-        self.chat_idle_spin.setToolTip("Wait this long without router activity. Active streams reset this timer. Stop is always available; maximum request duration is one hour.")
+        self.chat_idle_spin.setToolTip(
+            "Wait this long without router activity. Active streams reset this timer. Stop is always available; maximum request duration is one hour."
+        )
         form.addRow("Chat idle timeout", self.chat_idle_spin)
         layout.addWidget(connection)
 
@@ -130,6 +190,35 @@ class RouterSettingsDialog(QDialog):
         history_note.setProperty("kind", "meta")
         history_form.addRow(history_note)
         layout.addWidget(history)
+
+        memory = QGroupBox("Optional EverOS memory", body)
+        memory_form = QFormLayout(memory)
+        self.memory_enabled_check = QCheckBox("Use local EverOS memory", memory)
+        self.memory_url = QLineEdit(memory)
+        self.memory_user = QLineEdit(memory)
+        self.memory_app = QLineEdit(memory)
+        self.memory_project = QLineEdit(memory)
+        memory_form.addRow(self.memory_enabled_check)
+        memory_form.addRow("Local URL", self.memory_url)
+        memory_form.addRow("User ID", self.memory_user)
+        memory_form.addRow("App scope", self.memory_app)
+        memory_form.addRow("Memory scope", self.memory_project)
+        memory_note = QLabel("The agent may search this scope and send relevant excerpts to your configured model. No per-search prompts; no automatic memory writes. Use /remember or Add context → Memory to save a note. Live QGIS data stays authoritative.", memory)
+        memory_note.setWordWrap(True)
+        memory_note.setProperty("kind", "meta")
+        memory_form.addRow(memory_note)
+        self.memory_test_button = QPushButton("Test local EverOS", memory)
+        self.memory_test_status = QLabel("Not tested", memory)
+        self.memory_test_status.setWordWrap(True)
+        self.memory_test_status.setTextFormat(Qt.PlainText)
+        memory_form.addRow(self.memory_test_button, self.memory_test_status)
+        self.memory_test_client = EverosClient(self)
+        self.memory_test_client.completed.connect(lambda result:self.memory_test_status.setText("EverOS is reachable" if result.get("ok") else "Not ready"))
+        self.memory_test_client.failed.connect(lambda text,_uncertain:self.memory_test_status.setText(text))
+        self.memory_test_button.clicked.connect(self._test_memory)
+        self.finished.connect(self.memory_test_client.close)
+        self.memory_enabled_check.toggled.connect(self._memory_enabled_changed)
+        layout.addWidget(memory)
 
         test_group = QGroupBox("Connection test", body)
         test_layout = QVBoxLayout(test_group)
@@ -182,7 +271,10 @@ class RouterSettingsDialog(QDialog):
         self.name_edit.setText(profile.name)
         self.base_url_edit.setText(profile.base_url)
         self.auth_select.setConfigId(profile.authcfg)
+        self.automatic_read_check.setChecked(self.settings.automatic_read_access())
+        self.context_trust_check.setEnabled(not self.automatic_read_check.isChecked())
         self.context_trust_check.setChecked(self.settings.is_context_trusted(profile))
+        self.visual_trust_check.setChecked(self.settings.is_visual_trusted(profile))
         self.streaming_check.setChecked(profile.streaming)
         self.adapter_combo.setCurrentIndex(self.adapter_combo.findData(profile.adapter))
         self.summary_check.setChecked(profile.reasoning_summaries)
@@ -190,10 +282,39 @@ class RouterSettingsDialog(QDialog):
         self.timeout_spin.setValue(profile.timeout_seconds)
         self.chat_idle_spin.setValue(profile.chat_idle_timeout_seconds)
         self.retention_spin.setValue(self.settings.history_retention_days())
+        memory = self.settings.everos_config()
+        self.memory_enabled_check.setChecked(memory.enabled)
+        self.memory_url.setText(memory.base_url)
+        self.memory_user.setText(memory.user_id)
+        self.memory_app.setText(memory.app_id)
+        self.memory_project.setText(memory.project_id)
+        self._memory_enabled_changed(memory.enabled)
         self._set_records(self.records)
 
     def _connection_identity_changed(self, *_args: Any) -> None:
         self.context_trust_check.setChecked(False)
+        self.visual_trust_check.setChecked(False)
+        if hasattr(self,"memory_enabled_check"):
+            self.memory_enabled_check.setChecked(False)
+
+    def _memory_enabled_changed(self, enabled):
+        for widget in (self.memory_url,self.memory_user,self.memory_app,self.memory_project,self.memory_test_button):
+            widget.setEnabled(enabled)
+        if not enabled and self.memory_test_client.busy:
+            self.memory_test_client.cancel()
+
+    def _memory_from_form(self):
+        if not self.memory_enabled_check.isChecked():
+            return replace(self.settings.everos_config(), enabled=False)
+        return EverosConfig(enabled=True,base_url=self.memory_url.text().strip(),user_id=self.memory_user.text().strip(),app_id=self.memory_app.text().strip(),project_id=self.memory_project.text().strip()).validate()
+
+    def _test_memory(self):
+        try:
+            self.memory_test_client.cancel()
+            self.memory_test_status.setText("Checking…")
+            self.memory_test_client.check(self._memory_from_form())
+        except ValueError as exc:
+            self.memory_test_status.setText(str(exc))
 
     def _profile_from_form(self) -> RouterProfile:
         base_url = self.base_url_edit.text().strip()
@@ -207,22 +328,30 @@ class RouterSettingsDialog(QDialog):
             timeout_seconds=self.timeout_spin.value(),
             chat_idle_timeout_seconds=self.chat_idle_spin.value(),
             adapter=str(self.adapter_combo.currentData()),
-            reasoning_summaries=self.summary_check.isChecked() and self.adapter_combo.currentData() == "responses",
+            reasoning_summaries=self.summary_check.isChecked()
+            and self.adapter_combo.currentData() == "responses",
         )
 
     def _save(self) -> None:
         try:
             profile = self._profile_from_form()
-        except ProtocolError as exc:
+            memory = self._memory_from_form()
+        except (ProtocolError, ValueError) as exc:
             QMessageBox.warning(self, "Invalid connection", str(exc))
             self.base_url_edit.setFocus()
             return
         self._store_current_capabilities()
         self.settings.save_profile(profile)
+        self.settings.save_everos_config(memory)
+        self.settings.save_automatic_read_access(self.automatic_read_check.isChecked())
         if self.context_trust_check.isChecked():
             self.settings.trust_context(profile)
         else:
             self.settings.clear_context_trust()
+        if self.visual_trust_check.isChecked():
+            self.settings.trust_visuals(profile)
+        else:
+            self.settings.clear_visual_trust()
         self.settings.save_capabilities(self.capabilities)
         self.settings.save_history_retention_days(self.retention_spin.value())
         self.profileSaved.emit(profile)
@@ -337,7 +466,9 @@ class ComposerPopover(QFrame):
         height = min(preferred_height, above if upward else below)
         self.setMinimumHeight(0)
         self.setFixedHeight(max(1, height))
-        x = max(bounds.left(), min(self.anchor.mapToGlobal(QPoint()).x(), bounds.right() - width + 1))
+        x = max(
+            bounds.left(), min(self.anchor.mapToGlobal(QPoint()).x(), bounds.right() - width + 1)
+        )
         y = anchor_top - self.height() - 5 if upward else anchor_bottom + 5
         self.move(x, max(bounds.top(), min(y, bounds.bottom() - self.height() + 1)))
         for widget in self.findChildren(QWidget):
@@ -428,7 +559,11 @@ class ModelPopover(ComposerPopover):
 
     def set_models(self, records: list[ModelRecord], updated: str = "") -> None:
         self.records = list(records)
-        self.updated.setText(f"Catalog updated {updated.replace('T', ' ')[:16]}" if updated else "Model catalog not loaded")
+        self.updated.setText(
+            f"Catalog updated {updated.replace('T', ' ')[:16]}"
+            if updated
+            else "Model catalog not loaded"
+        )
         self._populate_models()
 
     def set_current(self, model_id: str, thinking: str, values: list[str]) -> None:
@@ -440,7 +575,9 @@ class ModelPopover(ComposerPopover):
         self.thinking.setCurrentText(thinking if thinking in self._thinking_values else "Auto")
         self.thinking.blockSignals(False)
         self.capability.setText(
-            "Configured capability" if len(self._thinking_values) > 1 else "Capability unknown - Auto only"
+            "Configured capability"
+            if len(self._thinking_values) > 1
+            else "Capability unknown - Auto only"
         )
         self._select_current_item()
 

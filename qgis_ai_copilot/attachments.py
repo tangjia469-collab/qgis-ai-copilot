@@ -243,6 +243,11 @@ def prepare_image(
     value = image.toImage() if hasattr(image, "toImage") else image
     if not isinstance(value, QImage) or value.isNull():
         raise AttachmentError("No usable image was found.")
+    if value.devicePixelRatio() != 1.0:
+        # QPainter otherwise interprets the source in logical pixels and can
+        # leave the physical-pixel tail transparent on Retina captures.
+        value = value.copy()
+        value.setDevicePixelRatio(1.0)
     if value.width() * value.height() > MAX_IMAGE_PIXELS:
         raise AttachmentError(
             "The image exceeds 32 megapixels. Crop or resize it before attaching."
